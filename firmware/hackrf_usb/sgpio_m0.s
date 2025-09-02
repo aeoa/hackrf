@@ -712,7 +712,26 @@ rx_loop:
 	ldr r1, [sgpio_data, #SLICE5]                   // r1 = SGPIO_REG_SS[SLICE5]            // 10
 	ldr r2, [sgpio_data, #SLICE6]                   // r2 = SGPIO_REG_SS[SLICE6]            // 10
 	ldr r3, [sgpio_data, #SLICE7]                   // r3 = SGPIO_REG_SS[SLICE7]            // 10
-	stm buf_ptr!, {r0-r3}                           // buf_ptr[0:16] = r0-r3; buf_ptr += 16 // 5
+
+	// Store the first three words of this block
+    stm  buf_ptr!, {r0-r2}
+
+	// Clear LSB of r3
+	movs    r1, #1           // r1 = 1
+	mvn     r2, r1           // r2 = 0xFFFFFFFE
+	and     r3, r3, r2       // r3 &= r2 (clear bit 0 of r3)
+
+	// Read live input PIN register for port 3 and isolate PPS bit (bit11)
+	ldr     r0, =0x400F610C  // GPIO3_PIN address
+	ldr     r0, [r0]         // r0 = PIN[3]
+	lsr     r0, r0, #11      // r0 >>= 11
+	and     r0, r0, r1       // r0 &= r1 (isolate bit 0)
+
+	// Add PPS bit into r3 LSB
+	add     r3, r3, r0
+
+	// Store the modified last word
+	stm     buf_ptr!, {r3}
 
 	// Update counts.
 	update_counts                                   // update_counts()                      // 4

@@ -47,6 +47,10 @@
 
 #include "gpio_lpc.h"
 
+// static struct gpio_t gpio_pps_trigger_9 = GPIO(3, 9);
+// static struct gpio_t gpio_pps_trigger_10 = GPIO(3, 10);
+static struct gpio_t gpio_pps_trigger_11 = GPIO(3, 11);
+
 /* GPIO Output PinMux */
 static struct gpio_t gpio_led[] = {
 	GPIO(2, 1),
@@ -879,6 +883,15 @@ void pin_setup(void)
 	 *
 	 * LPC43xx pull-up and pull-down resistors are approximately 53K.
 	 */
+
+	// scu_pinmux(SCU_PINMUX_GPIO3_9,  SCU_CONF_FUNCTION0 | SCU_GPIO_PUP);
+	// scu_pinmux(SCU_PINMUX_GPIO3_10, SCU_CONF_FUNCTION0 | SCU_GPIO_PUP);
+	scu_pinmux(SCU_PINMUX_GPIO3_11, SCU_CONF_FUNCTION0 | SCU_GPIO_PUP);
+
+	// gpio_input(&gpio_pps_trigger_9);
+	// gpio_input(&gpio_pps_trigger_10);
+	gpio_input(&gpio_pps_trigger_11);
+
 #ifdef HACKRF_ONE
 	scu_pinmux(SCU_PINMUX_PP_TMS, SCU_GPIO_PUP | SCU_CONF_FUNCTION0);
 	scu_pinmux(SCU_PINMUX_PP_TDO, SCU_GPIO_PDN | SCU_CONF_FUNCTION0);
