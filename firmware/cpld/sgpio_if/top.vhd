@@ -63,16 +63,14 @@ architecture Behavioral of top is
     signal pps_sync_stage0 : std_logic := '0';
     signal pps_sync_stage1 : std_logic := '0';
 
-    signal rx_byte_index : integer range 0 to 35 := 0;
-    signal pps_sample_index : integer range 0 to 16 := 0;
+    signal rx_byte_index : unsigned(5 downto 0) := (others => '0');
+    signal pps_sample_index : unsigned(4 downto 0) := (others => '0');
 
     signal pps_bits : std_logic_vector(15 downto 0) := (others => '0');
-    signal pps_meta_word : std_logic_vector(31 downto 0) := (others => '0');
     signal pps_edge_present : std_logic := '0';
     signal pps_edge_is_rising : std_logic := '0';
-    signal pps_edge_index : integer range 0 to 15 := 0;
-    signal pps_start_level : std_logic := '0';
-    signal pps_prev_level : std_logic := '0';
+    signal pps_edge_index : std_logic_vector(3 downto 0) := (others => '0');
+    signal pps_last_level : std_logic := '0';
 
     signal data_from_host_i : std_logic_vector(7 downto 0);
     signal data_to_host_o : std_logic_vector(7 downto 0);
@@ -117,6 +115,7 @@ begin
     tx_q_invert_mask <= X"7f" when q_invert = '1' else X"80";
     
     process(host_clk_i)
+        variable next_bits : std_logic_vector(15 downto 0);
     begin
         if rising_edge(host_clk_i) then
             codec_clk_rx_i <= CODEC_CLK;
@@ -129,7 +128,7 @@ begin
 
                 if host_data_enable_i = '1' then
                     -- Output IQ bytes for the first 32 byte slots, then PPS metadata bytes.
-                    if rx_byte_index < 32 then
+                    if rx_byte_index < to_unsigned(32, rx_byte_index'length) then
                         if codec_clk_rx_i = '1' then
                             -- I sample
                             data_to_host_o <= adc_data_i xor X"80";
@@ -139,89 +138,81 @@ begin
                         end if;
                     else
                         case rx_byte_index is
-                            when 32 =>
-                                data_to_host_o <= pps_meta_word(7 downto 0);
-                            when 33 =>
-                                data_to_host_o <= pps_meta_word(15 downto 8);
-                            when 34 =>
-                                data_to_host_o <= pps_meta_word(23 downto 16);
-                            when others =>
-                                data_to_host_o <= pps_meta_word(31 downto 24);
+                            when "100000" =>  -- 32
+                                data_to_host_o <= pps_bits(7 downto 0);
+                            when "100001" =>  -- 33
+                                data_to_host_o <= pps_bits(15 downto 8);
+                            when "100010" =>  -- 34
+                                data_to_host_o <= "00" & pps_edge_is_rising &
+                                                  pps_edge_present & pps_edge_index;
+                            when others =>    -- 35
+                                data_to_host_o <= "000000" & pps_bits(15) & pps_bits(0);
                         end case;
                     end if;
 
                     -- Capture PPS level on I-sample boundaries.
-                    if (rx_byte_index < 32) and (codec_clk_rx_i = '1') then
-                        if pps_sample_index = 0 then
-                            pps_start_level <= pps_sync_stage1;
-                            pps_prev_level <= pps_sync_stage1;
-                        elsif pps_sample_index < 16 then
-                            if (pps_edge_present = '0') and (pps_sync_stage1 /= pps_prev_level) then
+                    if (rx_byte_index < to_unsigned(32, rx_byte_index'length)) and
+                       (codec_clk_rx_i = '1') then
+                        if pps_sample_index = (others => '0') then
+                            pps_bits <= (others => '0');
+                            pps_edge_present <= '0';
+                            pps_edge_is_rising <= '0';
+                            pps_edge_index <= (others => '0');
+                        end if;
+
+                        if pps_sample_index < "10000" then
+                            next_bits := pps_bits;
+                            next_bits(to_integer(pps_sample_index(3 downto 0))) := pps_sync_stage1;
+                            pps_bits <= next_bits;
+
+                            if (pps_edge_present = '0') and
+                               (pps_sample_index /= (others => '0')) and
+                               (pps_sync_stage1 /= pps_last_level) then
                                 pps_edge_present <= '1';
                                 pps_edge_is_rising <= pps_sync_stage1;
-                                pps_edge_index <= pps_sample_index;
+                                pps_edge_index <= std_logic_vector(pps_sample_index(3 downto 0));
                             end if;
-                            pps_prev_level <= pps_sync_stage1;
+
+                            if pps_sample_index < "01111" then   -- < 15
+                                pps_sample_index <= pps_sample_index + 1;
+                            else
+                                pps_sample_index <= "10000";      -- saturate at 16
+                            end if;
                         end if;
 
-                        if pps_sample_index < 16 then
-                            pps_bits(pps_sample_index) <= pps_sync_stage1;
-                        end if;
+                        pps_last_level <= pps_sync_stage1;
 
-                        if pps_sample_index < 15 then
-                            pps_sample_index <= pps_sample_index + 1;
-                        elsif pps_sample_index = 15 then
-                            pps_sample_index <= 16;
-                        end if;
-                    end if;
-
-                    -- Prepare PPS metadata word when transitioning to metadata bytes.
-                    if rx_byte_index = 31 then
-                        pps_meta_word(15 downto 0) <= pps_bits;
-                        pps_meta_word(19 downto 16) <= std_logic_vector(to_unsigned(pps_edge_index, 4));
-                        pps_meta_word(20) <= pps_edge_present;
-                        pps_meta_word(21) <= pps_edge_is_rising;
-                        pps_meta_word(22) <= pps_start_level;
-                        pps_meta_word(23) <= pps_prev_level;
-                        pps_meta_word(31 downto 24) <= (others => '0');
                     end if;
 
                     -- Advance or reset byte index for next cycle.
-                    if rx_byte_index = 35 then
-                        rx_byte_index <= 0;
-                        pps_sample_index <= 0;
-                        pps_bits <= (others => '0');
+                    if rx_byte_index = "100011" then -- 35
+                        rx_byte_index <= (others => '0');
+                        pps_sample_index <= (others => '0');
                         pps_edge_present <= '0';
                         pps_edge_is_rising <= '0';
-                        pps_edge_index <= 0;
-                        pps_start_level <= pps_sync_stage1;
-                        pps_prev_level <= pps_sync_stage1;
+                        pps_edge_index <= (others => '0');
+                    else
+                        rx_byte_index <= rx_byte_index + 1;
+                    end if;
                 else
-                    rx_byte_index <= rx_byte_index + 1;
-                end if;
-            else
-                data_to_host_o <= (others => '0');
-                rx_byte_index <= 0;
-                pps_sample_index <= 0;
-                pps_bits <= (others => '0');
-                pps_edge_present <= '0';
-                pps_edge_is_rising <= '0';
-                    pps_edge_index <= 0;
-                    pps_start_level <= '0';
-                    pps_prev_level <= '0';
-                    pps_meta_word <= (others => '0');
+                    data_to_host_o <= (others => '0');
+                    rx_byte_index <= (others => '0');
+                    pps_sample_index <= (others => '0');
+                    pps_bits <= (others => '0');
+                    pps_edge_present <= '0';
+                    pps_edge_is_rising <= '0';
+                    pps_edge_index <= (others => '0');
+                    pps_last_level <= '0';
                 end if;
             else
                 -- Reset PPS tracking in TX mode.
-                rx_byte_index <= 0;
-                pps_sample_index <= 0;
+                rx_byte_index <= (others => '0');
+                pps_sample_index <= (others => '0');
                 pps_bits <= (others => '0');
                 pps_edge_present <= '0';
                 pps_edge_is_rising <= '0';
-                pps_edge_index <= 0;
-                pps_start_level <= '0';
-                pps_prev_level <= '0';
-                pps_meta_word <= (others => '0');
+                pps_edge_index <= (others => '0');
+                pps_last_level <= '0';
             end if;
         end if;
     end process;
