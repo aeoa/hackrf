@@ -64,7 +64,7 @@ architecture Behavioral of top is
     signal pps_sync_stage1 : std_logic := '0';
 
     signal rx_byte_index : unsigned(5 downto 0) := (others => '0');
-    signal pps_sample_index : unsigned(4 downto 0) := (others => '0');
+    signal pps_sample_index : unsigned(3 downto 0) := (others => '0');
 
     signal pps_bits : std_logic_vector(7 downto 0) := (others => '0');
     signal pps_edge_present : std_logic := '0';
@@ -153,14 +153,14 @@ begin
                     -- Capture PPS level on I-sample boundaries.
                     if (rx_byte_index < to_unsigned(32, rx_byte_index'length)) and
                        (codec_clk_rx_i = '1') then
-                        if pps_sample_index = "00000" then
+                        if pps_sample_index = "0000" then
                             pps_last_level <= pps_sync_stage1;
                         end if;
 
                         pps_bits <= pps_bits(6 downto 0) & pps_sync_stage1;
 
                         if (pps_edge_present = '0') and
-                           (pps_sample_index /= "00000") and
+                           (pps_sample_index /= "0000") and
                            (pps_sync_stage1 /= pps_last_level) then
                             pps_edge_present <= '1';
                             pps_edge_is_rising <= pps_sync_stage1;
@@ -169,10 +169,8 @@ begin
 
                         pps_last_level <= pps_sync_stage1;
 
-                        if pps_sample_index < "01111" then   -- < 15
+                        if pps_sample_index < "1111" then   -- < 15
                             pps_sample_index <= pps_sample_index + 1;
-                        else
-                            pps_sample_index <= "10000";      -- saturate at 16
                         end if;
                     end if;
 
