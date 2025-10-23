@@ -60,9 +60,6 @@ architecture Behavioral of top is
     signal host_data_enable_i : std_logic;
     signal host_data_capture_o : std_logic;
 
-    signal pps_sync_stage0 : std_logic := '0';
-    signal pps_sync_stage1 : std_logic := '0';
-
     signal rx_byte_index : unsigned(5 downto 0) := (others => '0');
 
     signal pps_bits : std_logic_vector(15 downto 0) := (others => '0');
@@ -116,9 +113,6 @@ begin
             adc_data_i <= DA(7 downto 0);
 
             if transfer_direction_i = from_adc then
-                -- Synchronize PPS input to host clock domain.
-                pps_sync_stage0 <= HOST_SYNC;
-                pps_sync_stage1 <= pps_sync_stage0;
 
                 if host_data_enable_i = '1' then
                     -- Output IQ bytes for the first 32 byte slots, then PPS metadata bytes.
@@ -144,7 +138,7 @@ begin
                     -- Capture PPS level on I-sample boundaries.
                     if (rx_byte_index < to_unsigned(32, rx_byte_index'length)) and
                        (codec_clk_rx_i = '1') then
-                        pps_bits <= pps_bits(14 downto 0) & pps_sync_stage1;
+                        pps_bits <= pps_bits(14 downto 0) & HOST_SYNC;
                     end if;
 
                     -- Advance or reset byte index for next cycle.
