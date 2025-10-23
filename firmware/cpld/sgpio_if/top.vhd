@@ -146,7 +146,8 @@ begin
                                 data_to_host_o <= "00" & pps_edge_is_rising &
                                                   pps_edge_present & pps_edge_index;
                             when others =>    -- 35
-                                data_to_host_o <= "000000" & pps_bits(15) & pps_bits(0);
+                                data_to_host_o <= (7 downto 2 => '0') &
+                                                  pps_bits(15) & pps_bits(0);
                         end case;
                     end if;
 
@@ -158,6 +159,7 @@ begin
                             pps_edge_present <= '0';
                             pps_edge_is_rising <= '0';
                             pps_edge_index <= (others => '0');
+                            pps_last_level <= pps_sync_stage1;
                         end if;
 
                         if pps_sample_index < "10000" then
