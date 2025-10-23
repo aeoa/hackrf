@@ -57,7 +57,7 @@ usb_request_status_t usb_vendor_request_init_sweep(
 	int i;
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
 		num_bytes = (endpoint->setup.index << 16) | endpoint->setup.value;
-		dwell_blocks = num_bytes / 0x4000;
+	dwell_blocks = num_bytes / USB_TRANSFER_SIZE;
 		if (1 > dwell_blocks) {
 			return USB_REQUEST_STATUS_STALL;
 		}
@@ -101,7 +101,7 @@ void sweep_bulk_transfer_complete(void* user_data, unsigned int bytes_transferre
 
 	// For each buffer transferred, we need to bump the count by three buffers
 	// worth of data, to allow for the discarded buffers.
-	m0_state.m4_count += 3 * 0x4000;
+	m0_state.m4_count += 3 * USB_TRANSFER_SIZE;
 }
 
 void sweep_mode(uint32_t seq)
@@ -109,13 +109,13 @@ void sweep_mode(uint32_t seq)
 	// Sweep mode is implemented using timed M0 operations, as follows:
 	//
 	// 0. M4 initially puts the M0 into RX mode, with an m0_count threshold
-	//    of 16K and a next mode of WAIT.
+	//    of USB_TRANSFER_SIZE bytes and a next mode of WAIT.
 	//
 	// 1. M4 spins until the M0 switches to WAIT mode.
 	//
-	// 2. M0 captures one 16K block of samples, and switches to WAIT mode.
+	// 2. M0 captures one transfer-sized block of samples, and switches to WAIT mode.
 	//
-	// 3. M4 sees the mode change, advances the m0_count target by 32K, and
+	// 3. M4 sees the mode change, advances the m0_count target by 2 * USB_TRANSFER_SIZE, and
 	//    sets next mode to RX.
 	//
 	// 4. M4 adds the sweep metadata at the start of the block and
@@ -125,7 +125,7 @@ void sweep_mode(uint32_t seq)
 	//    complete before the M0 goes back to RX.
 	//
 	// 6. M4 spins until the M0 mode changes to RX, then advances the
-	//    m0_count limit by 16K and sets the next mode to WAIT.
+	//    m0_count limit by 2 * USB_TRANSFER_SIZE and sets the next mode to WAIT.
 	//
 	// 7. Process repeats from step 1.
 
@@ -139,7 +139,7 @@ void sweep_mode(uint32_t seq)
 	transceiver_startup(TRANSCEIVER_MODE_RX_SWEEP);
 
 	// Set M0 to RX first buffer, then wait.
-	m0_state.threshold = 0x4000;
+	m0_state.threshold = USB_TRANSFER_SIZE;
 	m0_state.next_mode = M0_MODE_WAIT;
 
 	baseband_streaming_enable(&sgpio_config);
@@ -152,12 +152,12 @@ void sweep_mode(uint32_t seq)
 			}
 		}
 
-		// Set M0 to switch back to RX after two more buffers.
-		m0_state.threshold += 0x8000;
+	// Set M0 to switch back to RX after two more buffers.
+	m0_state.threshold += 2 * USB_TRANSFER_SIZE;
 		m0_state.next_mode = M0_MODE_RX;
 
 		// Write metadata to buffer.
-		buffer = &usb_bulk_buffer[phase * 0x4000];
+	buffer = &usb_bulk_buffer[phase * USB_TRANSFER_SIZE];
 		*buffer = 0x7f;
 		*(buffer + 1) = 0x7f;
 		*(buffer + 2) = sweep_freq & 0xff;
@@ -173,7 +173,7 @@ void sweep_mode(uint32_t seq)
 		usb_transfer_schedule_block(
 			&usb_endpoint_bulk_in,
 			buffer,
-			0x4000,
+		USB_TRANSFER_SIZE,
 			sweep_bulk_transfer_complete,
 			NULL);
 
@@ -224,7 +224,7 @@ void sweep_mode(uint32_t seq)
 		}
 
 		// Set M0 to switch back to WAIT after filling next buffer.
-		m0_state.threshold += 0x4000;
+		m0_state.threshold += USB_TRANSFER_SIZE;
 		m0_state.next_mode = M0_MODE_WAIT;
 	}
 end:

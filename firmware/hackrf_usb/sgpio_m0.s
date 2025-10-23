@@ -29,7 +29,7 @@ This file contains the code that runs on the Cortex-M0 core of the LPC43xx.
 The M0 core is used to implement all the timing-critical usage of the SGPIO
 peripheral, which interfaces to the MAX5864 ADC/DAC via the CPLD.
 
-The M0 reads or writes 32 bytes at a time from the SGPIO registers,
+The M0 reads or writes 36 bytes at a time from the SGPIO registers,
 transferring these bytes to or from a shared USB bulk buffer. The M4 core
 handles transferring data between this buffer and the USB host.
 
@@ -47,7 +47,7 @@ TX_START:       Write zeroes to SGPIO until there is data in the buffer.
 TX_RUN:         Read data from the buffer and write it to SGPIO.
 
 In all modes except IDLE, the M0 advances a byte counter, which increases by
-32 each time that many bytes are exchanged with the buffer (or skipped over,
+36 each time that many bytes are exchanged with the buffer (or skipped over,
 in WAIT mode).
 
 As the M4 core produces or consumes these bytes, it advances its own counter.
@@ -78,9 +78,10 @@ This code has tight timing constraints.
 
 We have to complete a read or write from SGPIO every 163 cycles.
 
-The CPU clock is 204MHz. We exchange 32 bytes at a time in the SGPIO
-registers, which is 16 samples worth of IQ data. At the maximum sample rate of
-20MHz, the SGPIO update rate is 20 / 16 = 1.25MHz. So we have 204 / 1.25 =
+The CPU clock is 204MHz. We exchange 36 bytes at a time in the SGPIO
+registers, which is 16 samples worth of IQ data plus 4 bytes of PPS metadata.
+At the maximum sample rate of 20MHz, the SGPIO update rate is 20 / 16 =
+1.25MHz. So we have 204 / 1.25 =
 163.2 cycles available.
 
 Access to the SGPIO peripheral is slow, due to the asynchronous bridge that
@@ -201,8 +202,8 @@ The rest of this file is organised as follows:
 
 // Buffer that we're funneling data to/from.
 .equ TARGET_DATA_BUFFER,                   0x20008000
-.equ TARGET_BUFFER_SIZE,                   0x8000
-.equ TARGET_BUFFER_MASK,                   0x7fff
+.equ TARGET_BUFFER_SIZE,                   0x9000
+.equ CHUNK_BYTE_COUNT,                    36
 
 // Base address of the state structure.
 .equ STATE_BASE,                           0x20007000
@@ -221,6 +222,7 @@ The rest of this file is organised as follows:
 
 // Private variables stored after state.
 .equ PREV_LONGEST_SHORTFALL,               0x28
+.equ CURRENT_BUF_OFFSET,                  0x2C
 
 // Operating modes.
 .equ MODE_IDLE,                            0
@@ -236,24 +238,23 @@ The rest of this file is organised as follows:
 .equ ERROR_MISSED_DEADLINE,                3
 
 // Our slice chain is set up as follows (ascending data age; arrows are reversed for flow):
-//     L  -> F  -> K  -> C -> J  -> E  -> I  -> A
+//     B  -> L  -> F  -> K -> C  -> J  -> E  -> I  -> A
 // Which has equivalent shadow register offsets:
-//     44 -> 20 -> 40 -> 8 -> 36 -> 16 -> 32 -> 0
-.equ SLICE0,                               44
-.equ SLICE1,                               20
-.equ SLICE2,                               40
-.equ SLICE3,                               8
-.equ SLICE4,                               36
-.equ SLICE5,                               16
-.equ SLICE6,                               32
-.equ SLICE7,                               0
+//      4 -> 44 -> 20 -> 40 -> 8 -> 36 -> 16 -> 32 -> 0
+.equ SLICE0,                               4
+.equ SLICE1,                               44
+.equ SLICE2,                               20
+.equ SLICE3,                               40
+.equ SLICE4,                               8
+.equ SLICE5,                               36
+.equ SLICE6,                               16
+.equ SLICE7,                               32
+.equ SLICE8,                               0
 
 /* Allocations of single-use registers */
 
-buf_size_minus_32 .req r14
 state             .req r13
 buf_base          .req r12
-buf_mask          .req r11
 shortfall_length  .req r10
 hi_zero           .req r9
 sgpio_data        .req r7
@@ -311,8 +312,7 @@ buf_ptr           .req r4
 
 .macro update_buf_ptr
 	// Update the address of the buffer segment we want to write to / read from.
-	mov buf_ptr, buf_mask                           // buf_ptr = buf_mask                   // 1
-	and buf_ptr, count                              // buf_ptr &= count                     // 1
+	ldr buf_ptr, [state, #CURRENT_BUF_OFFSET]       // buf_ptr = offset                     // 2
 	add buf_ptr, buf_base                           // buf_ptr += buf_base                  // 1
 .endm
 
@@ -320,8 +320,22 @@ buf_ptr           .req r4
 	// Update counts after successful SGPIO operation.
 
 	// Update the byte count and store the new value.
-	add count, #32                                  // count += 32                          // 1
+	add count, #CHUNK_BYTE_COUNT                   // count += chunk                       // 1
 	str count, [state, #M0_COUNT]                   // state.m0_count = count               // 2
+
+	// Advance buffer offset and wrap if necessary.
+	offset .req r0
+	size .req r1
+	ldr offset, [state, #CURRENT_BUF_OFFSET]        // offset = current offset              // 2
+	add offset, #CHUNK_BYTE_COUNT                   // offset += chunk                      // 1
+	ldr size, =TARGET_BUFFER_SIZE                   // size = TARGET_BUFFER_SIZE            // 2
+	cmp offset, size                                // if offset < size:                    // 1
+	blt 1f                                          //      skip wrap                       // 1 thru, 3 taken
+	sub offset, offset, size                        // offset -= size                       // 1
+1:
+	str offset, [state, #CURRENT_BUF_OFFSET]        // state.buf_offset = offset            // 2
+	.unreq offset
+	.unreq size
 
 	// We didn't have a shortfall, so the current shortfall length is zero.
 	mov shortfall_length, hi_zero                   // shortfall_length = hi_zero           // 1
@@ -346,10 +360,14 @@ buf_ptr           .req r4
 	// Branch according to new mode.
 	cmp new_mode, #MODE_RX                          // if new_mode == RX:                   // 1
 	beq rx_loop                                     //      goto rx_loop                    // 1 thru, 3 taken
-	bgt tx_loop                                     // elif new_mode > RX: goto tx_loop     // 1 thru, 3 taken
 	cmp new_mode, #MODE_WAIT                        // if new_mode == WAIT:                 // 1
 	beq wait_loop                                   //      goto wait_loop                  // 1 thru, 3 taken
-	b idle                                          // goto idle                            // 3
+	cmp new_mode, #MODE_TX_START                    // if new_mode >= MODE_TX_START:        // 1
+	bge 1f                                          //      goto tx_loop handler            // 1 thru, 3 taken
+	b return_idle                                   // otherwise goto idle                  // 3
+1:
+	ldr new_mode, =tx_loop                          // new_mode = &tx_loop                  // 2
+	bx new_mode                                     // goto tx_loop                         // 2
 .endm
 
 .macro handle_shortfall name
@@ -381,7 +399,7 @@ buf_ptr           .req r4
 \name\()_extend_shortfall:
 
 	// Extend the length of the current shortfall, and store back in high register.
-	add length, #32                                 // length += 32                         // 1
+	add length, #CHUNK_BYTE_COUNT                  // length += chunk                      // 1
 	mov shortfall_length, length                    // shortfall_length = length            // 1
 
 	// Is this now the longest shortfall?
@@ -474,14 +492,11 @@ main:                                                                           
 	value .req r0
 	ldr sgpio_int, =SGPIO_EXCHANGE_INTERRUPT_BASE   // sgpio_int = SGPIO_INT_BASE           // 2
 	ldr sgpio_data, =SGPIO_SHADOW_REGISTERS_BASE    // sgpio_data = SGPIO_REG_SS            // 2
-	ldr value, =(TARGET_BUFFER_SIZE - 32)           // value = TARGET_BUFFER_SIZE - 32      // 2
-	mov buf_size_minus_32, value                    // buf_size_minus_32 = value            // 1
 	ldr value, =TARGET_DATA_BUFFER                  // value = TARGET_DATA_BUFFER           // 2
 	mov buf_base, value                             // buf_base = value                     // 1
-	ldr value, =TARGET_BUFFER_MASK                  // value = TARGET_DATA_MASK             // 2
-	mov buf_mask, value                             // buf_mask = value                     // 1
 	ldr value, =STATE_BASE                          // value = STATE_BASE                   // 2
 	mov state, value                                // state = value                        // 1
+	.unreq value
 	zero .req r0
 	mov zero, #0                                    // zero = 0                             // 1
 	mov hi_zero, zero                               // hi_zero = zero                       // 1
@@ -497,6 +512,7 @@ main:                                                                           
 	str zero, [state, #THRESHOLD]                   // state.threshold = zero               // 2
 	str zero, [state, #NEXT_MODE]                   // state.next_mode = zero               // 2
 	str zero, [state, #ERROR]                       // state.error = zero                   // 2
+	str zero, [state, #CURRENT_BUF_OFFSET]          // buf offset = 0                       // 2
 
 idle:
 	// Wait for a mode to be requested, then set up the new mode and acknowledge the request.
@@ -565,6 +581,7 @@ tx_zeros:
 	str zero, [sgpio_data, #SLICE5]                 // SGPIO_REG_SS[SLICE5] = zero          // 8
 	str zero, [sgpio_data, #SLICE6]                 // SGPIO_REG_SS[SLICE6] = zero          // 8
 	str zero, [sgpio_data, #SLICE7]                 // SGPIO_REG_SS[SLICE7] = zero          // 8
+	str zero, [sgpio_data, #SLICE8]                 // SGPIO_REG_SS[SLICE8] = zero          // 8
 
 	// If in TX start mode, don't count this as a shortfall.
 	ldr mode, [state, #ACTIVE_MODE]                 // mode = state.active_mode             // 2
@@ -607,16 +624,16 @@ tx_loop:
 	// Check if there is enough data in the buffer.
 	//
 	// The number of bytes in the buffer is given by (m4_count - m0_count).
-	// We need 32 bytes available to proceed. So our margin, which we want
+	// We need CHUNK_BYTE_COUNT bytes available to proceed. So our margin, which we want
 	// to be positive or zero, is:
 	//
-	// buf_margin = m4_count - m0_count - 32
+	// buf_margin = m4_count - m0_count - CHUNK_BYTE_COUNT
 	//
 	// If there is insufficient data, transmit zeros instead.
 	buf_margin .req r0
 	ldr buf_margin, [state, #M4_COUNT]              // buf_margin = m4_count                // 2
 	sub buf_margin, count                           // buf_margin -= count                  // 1
-	sub buf_margin, #32                             // buf_margin -= 32                     // 1
+	sub buf_margin, #CHUNK_BYTE_COUNT              // buf_margin -= chunk                  // 1
 	bmi tx_zeros                                    // if buf_margin < 0: goto tx_zeros     // 1 thru, 3 taken
 
 	// Update buffer pointer.
@@ -638,6 +655,9 @@ tx_loop:
 	str r1, [sgpio_data, #SLICE5]                   // SGPIO_REG_SS[SLICE5] = r1            // 8
 	str r2, [sgpio_data, #SLICE6]                   // SGPIO_REG_SS[SLICE6] = r2            // 8
 	str r3, [sgpio_data, #SLICE7]                   // SGPIO_REG_SS[SLICE7] = r3            // 8
+	ldr r0, [buf_ptr]                               // r0 = next word                       // 2
+	add buf_ptr, #4                                 // buf_ptr += 4                         // 1
+	str r0, [sgpio_data, #SLICE8]                   // SGPIO_REG_SS[SLICE8] = r0            // 8
 
 	// Update counts.
 	update_counts                                   // update_counts()                      // 4
@@ -652,13 +672,17 @@ wait_loop:
 
 	// Check if there is a mode change request.
 	// If so, return to idle.
-	on_request idle                                                                         // 4
+	on_request return_idle                                                                  // 4
 
 	// Update counts.
 	update_counts                                   // update_counts()                      // 4
 
 	// Jump to next mode if threshold reached, or back to wait loop start.
 	jump_next_mode wait                             // jump_next_mode()                     // 15
+
+return_idle:
+	ldr r0, =idle                                  // r0 = &idle                           // 2
+	bx r0                                          // goto idle                            // 2
 
 missed_deadline:
 
@@ -683,19 +707,20 @@ rx_loop:
 	// Check if there is enough space in the buffer.
 	//
 	// The number of bytes in the buffer is given by (m0_count - m4_count).
-	// We need space for another 32 bytes to proceed. So our margin, which
+	// We need space for another CHUNK_BYTE_COUNT bytes to proceed. So our margin, which
 	// we want to be positive or zero, is:
 	//
-	// buf_margin = buf_size - (m0_count - state.m4_count) - 32
+	// buf_margin = buf_size - (m0_count - state.m4_count) - CHUNK_BYTE_COUNT
 	//
 	// which can be rearranged for efficiency as:
 	//
-	// buf_margin = m4_count + (buf_size - 32) - m0_count
+	// buf_margin = m4_count + (buf_size - CHUNK_BYTE_COUNT) - m0_count
 	//
 	// If there is insufficient space, jump to shortfall handling.
 	buf_margin .req r0
 	ldr buf_margin, [state, #M4_COUNT]              // buf_margin = state.m4_count          // 2
-	add buf_margin, buf_size_minus_32               // buf_margin += buf_size_minus_32      // 1
+	ldr r1, =(TARGET_BUFFER_SIZE - CHUNK_BYTE_COUNT) // r1 = buf_size - chunk               // 2
+	add buf_margin, r1                              // buf_margin += r1                     // 1
 	sub buf_margin, count                           // buf_margin -= count                  // 1
 	bmi rx_shortfall                                // if buf_margin < 0: goto rx_shortfall // 1 thru, 3 taken
 
@@ -713,6 +738,9 @@ rx_loop:
 	ldr r2, [sgpio_data, #SLICE6]                   // r2 = SGPIO_REG_SS[SLICE6]            // 10
 	ldr r3, [sgpio_data, #SLICE7]                   // r3 = SGPIO_REG_SS[SLICE7]            // 10
 	stm buf_ptr!, {r0-r3}                           // buf_ptr[0:16] = r0-r3; buf_ptr += 16 // 5
+	ldr r0, [sgpio_data, #SLICE8]                   // r0 = SGPIO_REG_SS[SLICE8]            // 10
+	str r0, [buf_ptr]                               // buf_ptr[0] = r0                      // 2
+	add buf_ptr, #4                                  // buf_ptr += 4                         // 1
 
 	// Update counts.
 	update_counts                                   // update_counts()                      // 4

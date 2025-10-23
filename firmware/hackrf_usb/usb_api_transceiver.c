@@ -47,8 +47,6 @@
 #include "usb_endpoint.h"
 #include "usb_api_sweep.h"
 
-#define USB_TRANSFER_SIZE 0x4000
-
 typedef struct {
 	uint32_t freq_mhz;
 	uint32_t freq_hz;
@@ -418,9 +416,10 @@ void rx_mode(uint32_t seq)
 
 	while (transceiver_request.seq == seq) {
 		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
+			uint32_t offset = usb_count % USB_BULK_BUFFER_SIZE;
 			usb_transfer_schedule_block(
 				&usb_endpoint_bulk_in,
-				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
+				&usb_bulk_buffer[offset],
 				USB_TRANSFER_SIZE,
 				transceiver_bulk_transfer_complete,
 				NULL);
@@ -454,9 +453,10 @@ void tx_mode(uint32_t seq)
 			started = true;
 		}
 		if ((usb_count - m0_state.m0_count) <= USB_TRANSFER_SIZE) {
+			uint32_t offset = usb_count % USB_BULK_BUFFER_SIZE;
 			usb_transfer_schedule_block(
 				&usb_endpoint_bulk_out,
-				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
+				&usb_bulk_buffer[offset],
 				USB_TRANSFER_SIZE,
 				transceiver_bulk_transfer_complete,
 				NULL);

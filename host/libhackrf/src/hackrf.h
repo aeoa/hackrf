@@ -518,6 +518,27 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #define BYTES_PER_BLOCK 16384
 
 /**
+ * Bytes per received chunk (16 complex samples + metadata)
+ * @ingroup streaming
+ */
+#define HACKRF_RX_BYTES_PER_CHUNK 36
+
+/**
+ * IQ payload bytes per received chunk (16 complex samples)
+ * @ingroup streaming
+ */
+#define HACKRF_RX_IQ_BYTES_PER_CHUNK 32
+
+/**
+ * Metadata bytes per received chunk
+ * @ingroup streaming
+ */
+#define HACKRF_RX_METADATA_BYTES_PER_CHUNK 4
+
+/** Metadata bytes per sweep block */
+#define HACKRF_METADATA_BYTES_PER_BLOCK 2048
+
+/**
  * Maximum number of sweep ranges to be specified for @ref hackrf_init_sweep
  * @ingroup streaming
  */
@@ -873,6 +894,10 @@ typedef struct {
 	int buffer_length;
 	/** number of buffer bytes that were transferred */
 	int valid_length;
+	/** pointer to metadata bytes captured alongside IQ data (RX only, may be NULL) */
+	uint8_t* metadata;
+	/** number of metadata bytes available in @ref metadata */
+	int metadata_length;
 	/** User provided RX context. Not used by the library, but available to transfer callbacks for use. Set along with the transfer callback using @ref hackrf_start_rx or @ref hackrf_start_rx_sweep */
 	void* rx_ctx;
 	/** User provided TX context. Not used by the library, but available to transfer callbacks for use. Set along with the transfer callback using @ref hackrf_start_tx*/

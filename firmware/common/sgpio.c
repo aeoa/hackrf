@@ -180,17 +180,18 @@ void sgpio_configure(sgpio_config_t* const config, const sgpio_direction_t direc
 		SGPIO_SLICE_K,
 		SGPIO_SLICE_F,
 		SGPIO_SLICE_L,
+		SGPIO_SLICE_B,
 	};
 	const uint_fast8_t slice_gpdma = SGPIO_SLICE_H;
 
 	const uint_fast8_t pos = config->slice_mode_multislice ? 0x1f : 0x03;
 	const bool single_slice = !config->slice_mode_multislice;
-	const uint_fast8_t slice_count = config->slice_mode_multislice ? 8 : 1;
+	const uint_fast8_t slice_count = config->slice_mode_multislice ? 9 : 1;
 
 	// Also enable slice D for clkout to the SCTimer
 	uint32_t slice_enable_mask = BIT3;
 
-	/* Configure Slice A, I, E, J, C, K, F, L (sgpio_slice_mode_multislice mode) */
+	/* Configure Slice A, I, E, J, C, K, F, L, B (sgpio_slice_mode_multislice mode) */
 	for (uint_fast8_t i = 0; i < slice_count; i++) {
 		const uint_fast8_t slice_index = slice_indices[i];
 		/* Only for slice0/A and RX mode set input_slice to 1 */

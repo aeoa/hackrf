@@ -28,6 +28,8 @@
 #include <usb_type.h>
 #include <usb_request.h>
 
+#define USB_TRANSFER_SIZE 0x4800
+
 typedef struct {
 	transceiver_mode_t mode;
 	uint32_t seq;

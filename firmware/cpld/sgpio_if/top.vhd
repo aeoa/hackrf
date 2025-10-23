@@ -21,7 +21,7 @@
 
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
-use ieee.std_logic_unsigned.all;
+use IEEE.NUMERIC_STD.ALL;
 
 library UNISIM;
 use UNISIM.vcomponents.all;
@@ -59,10 +59,20 @@ architecture Behavioral of top is
 
     signal host_data_enable_i : std_logic;
     signal host_data_capture_o : std_logic;
-	 signal host_sync_enable : std_logic := '0';
-    signal host_sync_o : std_logic := '0';
-    signal host_sync_i : std_logic := '0';
-    signal host_sync_latched : std_logic := '0';
+
+    signal pps_sync_stage0 : std_logic := '0';
+    signal pps_sync_stage1 : std_logic := '0';
+
+    signal rx_byte_index : integer range 0 to 35 := 0;
+    signal pps_sample_index : integer range 0 to 16 := 0;
+
+    signal pps_bits : std_logic_vector(15 downto 0) := (others => '0');
+    signal pps_meta_word : std_logic_vector(31 downto 0) := (others => '0');
+    signal pps_edge_present : std_logic := '0';
+    signal pps_edge_is_rising : std_logic := '0';
+    signal pps_edge_index : integer range 0 to 15 := 0;
+    signal pps_start_level : std_logic := '0';
+    signal pps_prev_level : std_logic := '0';
 
     signal data_from_host_i : std_logic_vector(7 downto 0);
     signal data_to_host_o : std_logic_vector(7 downto 0);
@@ -94,9 +104,7 @@ begin
                                 else (others => 'Z');
 
     HOST_CAPTURE <= host_data_capture_o;
-	 host_sync_enable <= HOST_SYNC_EN;
-	 host_sync_i <= HOST_SYNC;
-	 HOST_SYNC_CMD <= host_sync_o;
+	 HOST_SYNC_CMD <= '0';
 	 
     host_data_enable_i <= not HOST_DISABLE;
     transfer_direction_i <= to_dac when HOST_DIRECTION = '1'
@@ -113,14 +121,107 @@ begin
         if rising_edge(host_clk_i) then
             codec_clk_rx_i <= CODEC_CLK;
             adc_data_i <= DA(7 downto 0);
-            if (transfer_direction_i = from_adc) then
-                if codec_clk_rx_i = '1' then
-                    -- I: non-inverted between MAX2837 and MAX5864
-                    data_to_host_o <= adc_data_i xor X"80";
+
+            if transfer_direction_i = from_adc then
+                -- Synchronize PPS input to host clock domain.
+                pps_sync_stage0 <= HOST_SYNC;
+                pps_sync_stage1 <= pps_sync_stage0;
+
+                if host_data_enable_i = '1' then
+                    -- Output IQ bytes for the first 32 byte slots, then PPS metadata bytes.
+                    if rx_byte_index < 32 then
+                        if codec_clk_rx_i = '1' then
+                            -- I sample
+                            data_to_host_o <= adc_data_i xor X"80";
+                        else
+                            -- Q sample
+                            data_to_host_o <= adc_data_i xor rx_q_invert_mask;
+                        end if;
+                    else
+                        case rx_byte_index is
+                            when 32 =>
+                                data_to_host_o <= pps_meta_word(7 downto 0);
+                            when 33 =>
+                                data_to_host_o <= pps_meta_word(15 downto 8);
+                            when 34 =>
+                                data_to_host_o <= pps_meta_word(23 downto 16);
+                            when others =>
+                                data_to_host_o <= pps_meta_word(31 downto 24);
+                        end case;
+                    end if;
+
+                    -- Capture PPS level on I-sample boundaries.
+                    if (rx_byte_index < 32) and (codec_clk_rx_i = '1') then
+                        if pps_sample_index = 0 then
+                            pps_start_level <= pps_sync_stage1;
+                            pps_prev_level <= pps_sync_stage1;
+                        elsif pps_sample_index < 16 then
+                            if (pps_edge_present = '0') and (pps_sync_stage1 /= pps_prev_level) then
+                                pps_edge_present <= '1';
+                                pps_edge_is_rising <= pps_sync_stage1;
+                                pps_edge_index <= pps_sample_index;
+                            end if;
+                            pps_prev_level <= pps_sync_stage1;
+                        end if;
+
+                        if pps_sample_index < 16 then
+                            pps_bits(pps_sample_index) <= pps_sync_stage1;
+                        end if;
+
+                        if pps_sample_index < 15 then
+                            pps_sample_index <= pps_sample_index + 1;
+                        elsif pps_sample_index = 15 then
+                            pps_sample_index <= 16;
+                        end if;
+                    end if;
+
+                    -- Prepare PPS metadata word when transitioning to metadata bytes.
+                    if rx_byte_index = 31 then
+                        pps_meta_word(15 downto 0) <= pps_bits;
+                        pps_meta_word(19 downto 16) <= std_logic_vector(to_unsigned(pps_edge_index, 4));
+                        pps_meta_word(20) <= pps_edge_present;
+                        pps_meta_word(21) <= pps_edge_is_rising;
+                        pps_meta_word(22) <= pps_start_level;
+                        pps_meta_word(23) <= pps_prev_level;
+                        pps_meta_word(31 downto 24) <= (others => '0');
+                    end if;
+
+                    -- Advance or reset byte index for next cycle.
+                    if rx_byte_index = 35 then
+                        rx_byte_index <= 0;
+                        pps_sample_index <= 0;
+                        pps_bits <= (others => '0');
+                        pps_edge_present <= '0';
+                        pps_edge_is_rising <= '0';
+                        pps_edge_index <= 0;
+                        pps_start_level <= pps_sync_stage1;
+                        pps_prev_level <= pps_sync_stage1;
                 else
-                    -- Q: inverted between MAX2837 and MAX5864
-                    data_to_host_o <= adc_data_i xor rx_q_invert_mask;
+                    rx_byte_index <= rx_byte_index + 1;
                 end if;
+            else
+                data_to_host_o <= (others => '0');
+                rx_byte_index <= 0;
+                pps_sample_index <= 0;
+                pps_bits <= (others => '0');
+                pps_edge_present <= '0';
+                pps_edge_is_rising <= '0';
+                    pps_edge_index <= 0;
+                    pps_start_level <= '0';
+                    pps_prev_level <= '0';
+                    pps_meta_word <= (others => '0');
+                end if;
+            else
+                -- Reset PPS tracking in TX mode.
+                rx_byte_index <= 0;
+                pps_sample_index <= 0;
+                pps_bits <= (others => '0');
+                pps_edge_present <= '0';
+                pps_edge_is_rising <= '0';
+                pps_edge_index <= 0;
+                pps_start_level <= '0';
+                pps_prev_level <= '0';
+                pps_meta_word <= (others => '0');
             end if;
         end if;
     end process;
@@ -142,29 +243,15 @@ begin
         end if;
     end process;
     
-    process (host_data_enable_i, host_sync_i)
-    begin
-        host_sync_o <= host_data_enable_i;
-        if host_data_enable_i = '1' then
-            if rising_edge(host_sync_i) then
-                host_sync_latched <= host_sync_i;
-            end if;
-        else
-            host_sync_latched <= '0';
-        end if;
-    end process;
-    
     process(host_clk_i)
     begin
         if rising_edge(host_clk_i) then
             if transfer_direction_i = to_dac then
                 if codec_clk_tx_i = '1' then
-                    host_data_capture_o <= host_data_enable_i and (host_sync_latched or not host_sync_enable);
+                    host_data_capture_o <= host_data_enable_i;
                 end if;
             else
-                if codec_clk_rx_i = '1' then
-                    host_data_capture_o <= host_data_enable_i and (host_sync_latched or not host_sync_enable);
-                end if; 
+                host_data_capture_o <= host_data_enable_i;
             end if;
         end if;
     end process;

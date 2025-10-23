@@ -333,6 +333,7 @@ static HANDLE interrupt_handle;
 #endif
 
 FILE* file = NULL;
+FILE* metadata_file = NULL;
 volatile uint32_t byte_count = 0;
 
 bool signalsource = false;
@@ -408,6 +409,8 @@ int rx_callback(hackrf_transfer* transfer)
 {
 	size_t bytes_to_write;
 	size_t bytes_written;
+	size_t metadata_to_write = 0;
+	uint8_t* metadata_ptr = transfer->metadata;
 	unsigned int i;
 
 	if (file == NULL) {
@@ -421,6 +424,18 @@ int rx_callback(hackrf_transfer* transfer)
 	for (i = 0; i < bytes_to_write; i++) {
 		int8_t value = transfer->buffer[i];
 		sum += value * value;
+	}
+
+	if ((metadata_ptr != NULL) && (transfer->metadata_length > 0)) {
+		size_t chunks_available =
+			transfer->metadata_length / HACKRF_RX_METADATA_BYTES_PER_CHUNK;
+		size_t chunks_to_write =
+			bytes_to_write / HACKRF_RX_IQ_BYTES_PER_CHUNK;
+		if (chunks_to_write > chunks_available) {
+			chunks_to_write = chunks_available;
+		}
+		metadata_to_write =
+			chunks_to_write * HACKRF_RX_METADATA_BYTES_PER_CHUNK;
 	}
 
 	/* Update both running totals at approximately the same time. */
@@ -448,6 +463,14 @@ int rx_callback(hackrf_transfer* transfer)
 			stop_main_loop();
 			return -1;
 		} else {
+			if ((metadata_file != NULL) && (metadata_to_write > 0)) {
+				size_t meta_written = fwrite(
+					metadata_ptr, 1, metadata_to_write, metadata_file);
+				if (meta_written != metadata_to_write) {
+					stop_main_loop();
+					return -1;
+				}
+			}
 			return 0;
 		}
 	}
@@ -659,6 +682,7 @@ static void usage()
 	printf("\t[-d serial_number] # Serial number of desired HackRF.\n");
 	printf("\t-r <filename> # Receive data into file (use '-' for stdout).\n");
 	printf("\t-t <filename> # Transmit data from file (use '-' for stdin).\n");
+	printf("\t[-M metadata_file] # Write raw metadata for received samples into file.\n");
 	printf("\t-w # Receive data into file with WAV header and automatic name.\n");
 	printf("\t   # This is for SDR# compatibility and may not work with other software.\n");
 	printf("\t[-f freq_hz] # Frequency in Hz [%sMHz to %sMHz supported, %sMHz to %sMHz forceable].\n",
@@ -749,7 +773,7 @@ int main(int argc, char** argv)
 	hackrf_m0_state state;
 	stats_t stats = {0, 0};
 
-	while ((opt = getopt(argc, argv, "Hwr:t:f:i:o:m:a:p:s:Fn:b:l:g:x:c:d:C:RS:Bh?")) !=
+	while ((opt = getopt(argc, argv, "Hwr:t:f:i:o:M:m:a:p:s:Fn:b:l:g:x:c:d:C:RS:Bh?")) !=
 	       EOF) {
 		result = HACKRF_SUCCESS;
 		switch (opt) {
@@ -792,10 +816,22 @@ int main(int argc, char** argv)
 			if_freq = true;
 			break;
 
-		case 'o':
-			result = parse_frequency_i64(optarg, endptr, &lo_freq_hz);
-			lo_freq = true;
-			break;
+	case 'o':
+		result = parse_frequency_i64(optarg, endptr, &lo_freq_hz);
+		lo_freq = true;
+		break;
+
+	case 'M':
+		metadata_file = fopen(optarg, "wb");
+		if (metadata_file == NULL) {
+			fprintf(
+				stderr,
+				"Failed to open metadata file \"%s\": %s\n",
+				optarg,
+				strerror(errno));
+			result = HACKRF_ERROR_INVALID_PARAM;
+		}
+		break;
 
 		case 'm':
 			image_reject = true;
@@ -1554,6 +1590,11 @@ int main(int argc, char** argv)
 			file = NULL;
 			fprintf(stderr, "fclose() done\n");
 		}
+	}
+	if (metadata_file != NULL) {
+		fflush(metadata_file);
+		fclose(metadata_file);
+		metadata_file = NULL;
 	}
 	fprintf(stderr, "exit\n");
 	return exit_code;

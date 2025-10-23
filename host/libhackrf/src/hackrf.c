@@ -358,6 +358,8 @@ static int prepare_transfers(
 				.buffer = device->transfers[transfer_index]->buffer,
 				.buffer_length = TRANSFER_BUFFER_SIZE,
 				.valid_length = TRANSFER_BUFFER_SIZE,
+				.metadata = NULL,
+				.metadata_length = 0,
 				.rx_ctx = device->rx_ctx,
 				.tx_ctx = device->tx_ctx,
 			};
@@ -1816,6 +1818,8 @@ hackrf_libusb_transfer_callback(struct libusb_transfer* usb_transfer)
 		.buffer = usb_transfer->buffer,
 		.buffer_length = TRANSFER_BUFFER_SIZE,
 		.valid_length = usb_transfer->actual_length,
+		.metadata = NULL,
+		.metadata_length = 0,
 		.rx_ctx = device->rx_ctx,
 		.tx_ctx = device->tx_ctx};
 
@@ -1830,6 +1834,39 @@ hackrf_libusb_transfer_callback(struct libusb_transfer* usb_transfer)
 	// of stopping them.
 	pthread_mutex_lock(&device->transfer_lock);
 	if (success) {
+		if (usb_transfer->endpoint == RX_ENDPOINT_ADDRESS) {
+			if (transfer.valid_length % HACKRF_RX_BYTES_PER_CHUNK == 0) {
+				const int chunk_count =
+					transfer.valid_length / HACKRF_RX_BYTES_PER_CHUNK;
+				if (chunk_count > 0) {
+					const int iq_per_chunk = HACKRF_RX_IQ_BYTES_PER_CHUNK;
+					const int meta_per_chunk =
+						HACKRF_RX_METADATA_BYTES_PER_CHUNK;
+					const int iq_total = chunk_count * iq_per_chunk;
+					uint8_t* metadata_start = transfer.buffer + iq_total;
+					uint8_t* metadata_ptr =
+						transfer.buffer + transfer.valid_length;
+
+					int chunk;
+					for (chunk = chunk_count - 1; chunk >= 0; chunk--) {
+						uint8_t* src =
+							transfer.buffer + (chunk * HACKRF_RX_BYTES_PER_CHUNK);
+						uint8_t* dst = transfer.buffer + (chunk * iq_per_chunk);
+						metadata_ptr -= meta_per_chunk;
+						memmove(dst, src, iq_per_chunk);
+						memcpy(
+							metadata_ptr,
+							src + iq_per_chunk,
+							meta_per_chunk);
+					}
+
+					transfer.valid_length = iq_total;
+					transfer.metadata = metadata_start;
+					transfer.metadata_length = chunk_count * meta_per_chunk;
+				}
+			}
+		}
+
 		if (device->streaming && (device->callback(&transfer) == 0) &&
 		    (transfer.valid_length > 0)) {
 			if ((resubmit = device->transfers_setup)) {
