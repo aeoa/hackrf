@@ -66,7 +66,7 @@ architecture Behavioral of top is
     signal rx_byte_index : unsigned(5 downto 0) := (others => '0');
     signal pps_sample_index : unsigned(4 downto 0) := (others => '0');
 
-    signal pps_bits : std_logic_vector(15 downto 0) := (others => '0');
+    signal pps_bits : std_logic_vector(7 downto 0) := (others => '0');
     signal pps_edge_present : std_logic := '0';
     signal pps_edge_is_rising : std_logic := '0';
     signal pps_edge_index : std_logic_vector(3 downto 0) := (others => '0');
@@ -139,14 +139,14 @@ begin
                     else
                         case rx_byte_index is
                             when "100000" =>  -- 32
-                                data_to_host_o <= pps_bits(7 downto 0);
+                                data_to_host_o <= pps_bits;
                             when "100001" =>  -- 33
-                                data_to_host_o <= pps_bits(15 downto 8);
+                                data_to_host_o <= pps_bits;
                             when "100010" =>  -- 34
                                 data_to_host_o <= "00" & pps_edge_is_rising &
                                                   pps_edge_present & pps_edge_index;
                             when others =>    -- 35
-                                data_to_host_o <= "000000" & pps_bits(15) & pps_bits(0);
+                                data_to_host_o <= "000000" & pps_bits(7) & pps_bits(0);
                         end case;
                     end if;
 
@@ -154,35 +154,26 @@ begin
                     if (rx_byte_index < to_unsigned(32, rx_byte_index'length)) and
                        (codec_clk_rx_i = '1') then
                         if pps_sample_index = "00000" then
-                            pps_bits <= (others => '0');
-                            pps_edge_present <= '0';
-                            pps_edge_is_rising <= '0';
-                            pps_edge_index <= (others => '0');
                             pps_last_level <= pps_sync_stage1;
                         end if;
 
-                        if pps_sample_index < "10000" then
-                            next_bits := pps_bits;
-                            next_bits(to_integer(pps_sample_index(3 downto 0))) := pps_sync_stage1;
-                            pps_bits <= next_bits;
+                        pps_bits <= pps_bits(6 downto 0) & pps_sync_stage1;
 
-                            if (pps_edge_present = '0') and
-                               (pps_sample_index /= "00000") and
-                               (pps_sync_stage1 /= pps_last_level) then
-                                pps_edge_present <= '1';
-                                pps_edge_is_rising <= pps_sync_stage1;
-                                pps_edge_index <= std_logic_vector(pps_sample_index(3 downto 0));
-                            end if;
-
-                            if pps_sample_index < "01111" then   -- < 15
-                                pps_sample_index <= pps_sample_index + 1;
-                            else
-                                pps_sample_index <= "10000";      -- saturate at 16
-                            end if;
+                        if (pps_edge_present = '0') and
+                           (pps_sample_index /= "00000") and
+                           (pps_sync_stage1 /= pps_last_level) then
+                            pps_edge_present <= '1';
+                            pps_edge_is_rising <= pps_sync_stage1;
+                            pps_edge_index <= std_logic_vector(pps_sample_index(3 downto 0));
                         end if;
 
                         pps_last_level <= pps_sync_stage1;
 
+                        if pps_sample_index < "01111" then   -- < 15
+                            pps_sample_index <= pps_sample_index + 1;
+                        else
+                            pps_sample_index <= "10000";      -- saturate at 16
+                        end if;
                     end if;
 
                     -- Advance or reset byte index for next cycle.
