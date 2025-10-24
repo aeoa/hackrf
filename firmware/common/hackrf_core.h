@@ -108,6 +108,7 @@ extern "C" {
 #define SCU_PINMUX_SGPIO10 (P1_14)
 #define SCU_PINMUX_SGPIO11 (P1_17)
 #define SCU_PINMUX_SGPIO12 (P1_18)
+#define SCU_PINMUX_SGPIO13 (P4_8)
 #define SCU_PINMUX_SGPIO14 (P4_9)
 #define SCU_PINMUX_SGPIO15 (P4_10)
 #define SCU_HW_SYNC_EN     (P4_8) /* GPIO5[12] on P4_8 */
