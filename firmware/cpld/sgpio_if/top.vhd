@@ -66,7 +66,6 @@ architecture Behavioral of top is
     signal host_sync_meta : std_logic := '0';
     signal host_sync_sync : std_logic := '0';
 
-    signal data_from_host_i : std_logic_vector(7 downto 0);
     signal data_to_host_o : std_logic_vector(7 downto 0);
 
     signal q_invert : std_logic;
@@ -184,12 +183,11 @@ begin
     begin
         if falling_edge(host_clk_i) then
             codec_clk_tx_i <= CODEC_CLK;
-            data_from_host_i <= HOST_DATA;
             if transfer_direction_i = to_dac then
                 if codec_clk_tx_i = '1' then
-                    dac_data_o <= (data_from_host_i xor tx_q_invert_mask) & tx_q_invert_mask(0) & tx_q_invert_mask(0);
+                    dac_data_o <= (HOST_DATA xor tx_q_invert_mask) & tx_q_invert_mask(0) & tx_q_invert_mask(0);
                 else
-                    dac_data_o <= (data_from_host_i xor X"80") & "00";
+                    dac_data_o <= (HOST_DATA xor X"80") & "00";
                 end if;
             else
                 dac_data_o <= (dac_data_o'high => '0', others => '1');
