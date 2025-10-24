@@ -59,10 +59,12 @@ architecture Behavioral of top is
 
     signal host_data_enable_i : std_logic;
     signal host_data_capture_o : std_logic;
-	 signal host_sync_enable : std_logic := '0';
-    signal host_sync_o : std_logic := '0';
-    signal host_sync_i : std_logic := '0';
-    signal host_sync_latched : std_logic := '0';
+    signal digital_sample_bits : std_logic_vector(15 downto 0) := (others => '0');
+    signal digital_high_byte : std_logic_vector(7 downto 0) := (others => '0');
+    signal digital_high_pending : std_logic := '0';
+    signal sample_counter : std_logic_vector(3 downto 0) := (others => '0');
+    signal host_sync_meta : std_logic := '0';
+    signal host_sync_sync : std_logic := '0';
 
     signal data_from_host_i : std_logic_vector(7 downto 0);
     signal data_to_host_o : std_logic_vector(7 downto 0);
@@ -89,14 +91,12 @@ begin
 
     ------------------------------------------------
     -- SGPIO interface
-    
+
     HOST_DATA <= data_to_host_o when transfer_direction_i = from_adc
                                 else (others => 'Z');
 
     HOST_CAPTURE <= host_data_capture_o;
-	 host_sync_enable <= HOST_SYNC_EN;
-	 host_sync_i <= HOST_SYNC;
-	 HOST_SYNC_CMD <= host_sync_o;
+    HOST_SYNC_CMD <= host_data_enable_i;
 	 
     host_data_enable_i <= not HOST_DISABLE;
     transfer_direction_i <= to_dac when HOST_DIRECTION = '1'
@@ -109,17 +109,51 @@ begin
     tx_q_invert_mask <= X"7f" when q_invert = '1' else X"80";
     
     process(host_clk_i)
+        variable digital_next : std_logic_vector(15 downto 0);
     begin
         if rising_edge(host_clk_i) then
             codec_clk_rx_i <= CODEC_CLK;
             adc_data_i <= DA(7 downto 0);
-            if (transfer_direction_i = from_adc) then
+            host_sync_meta <= HOST_SYNC;
+            host_sync_sync <= host_sync_meta;
+
+            -- Capture extension pin once per I sample and pack 16 bits into the final two bytes.
+            if (transfer_direction_i = from_adc) and (host_data_enable_i = '1') then
                 if codec_clk_rx_i = '1' then
-                    -- I: non-inverted between MAX2837 and MAX5864
-                    data_to_host_o <= adc_data_i xor X"80";
+                    digital_next := digital_sample_bits;
+                    digital_next := digital_next(14 downto 0) & host_sync_sync;
+                    digital_sample_bits <= digital_next;
+
+                    if sample_counter = X"F" then
+                        data_to_host_o <= digital_next(7 downto 0);
+                        digital_high_byte <= digital_next(15 downto 8);
+                        digital_high_pending <= '1';
+                        sample_counter <= (others => '0');
+                    else
+                        -- I: non-inverted between MAX2837 and MAX5864
+                        data_to_host_o <= adc_data_i xor X"80";
+                        sample_counter <= sample_counter + 1;
+                    end if;
                 else
-                    -- Q: inverted between MAX2837 and MAX5864
-                    data_to_host_o <= adc_data_i xor rx_q_invert_mask;
+                    if digital_high_pending = '1' then
+                        data_to_host_o <= digital_high_byte;
+                        digital_high_pending <= '0';
+                    else
+                        -- Q: inverted between MAX2837 and MAX5864
+                        data_to_host_o <= adc_data_i xor rx_q_invert_mask;
+                    end if;
+                end if;
+            else
+                digital_sample_bits <= (others => '0');
+                digital_high_byte <= (others => '0');
+                digital_high_pending <= '0';
+                sample_counter <= (others => '0');
+                if transfer_direction_i = from_adc then
+                    if codec_clk_rx_i = '1' then
+                        data_to_host_o <= adc_data_i xor X"80";
+                    else
+                        data_to_host_o <= adc_data_i xor rx_q_invert_mask;
+                    end if;
                 end if;
             end if;
         end if;
@@ -142,28 +176,16 @@ begin
         end if;
     end process;
     
-    process (host_data_enable_i, host_sync_i)
-    begin
-        host_sync_o <= host_data_enable_i;
-        if host_data_enable_i = '1' then
-            if rising_edge(host_sync_i) then
-                host_sync_latched <= host_sync_i;
-            end if;
-        else
-            host_sync_latched <= '0';
-        end if;
-    end process;
-    
     process(host_clk_i)
     begin
         if rising_edge(host_clk_i) then
             if transfer_direction_i = to_dac then
                 if codec_clk_tx_i = '1' then
-                    host_data_capture_o <= host_data_enable_i and (host_sync_latched or not host_sync_enable);
+                    host_data_capture_o <= host_data_enable_i;
                 end if;
             else
                 if codec_clk_rx_i = '1' then
-                    host_data_capture_o <= host_data_enable_i and (host_sync_latched or not host_sync_enable);
+                    host_data_capture_o <= host_data_enable_i;
                 end if; 
             end if;
         end if;
