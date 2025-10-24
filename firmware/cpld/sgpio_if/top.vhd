@@ -59,10 +59,6 @@ architecture Behavioral of top is
 
     signal host_data_enable_i : std_logic;
     signal host_data_capture_o : std_logic;
-	 signal host_sync_enable : std_logic := '0';
-    signal host_sync_o : std_logic := '0';
-    signal host_sync_i : std_logic := '0';
-    signal host_sync_latched : std_logic := '0';
 
     signal data_from_host_i : std_logic_vector(7 downto 0);
     signal data_to_host_o : std_logic_vector(7 downto 0);
@@ -94,9 +90,7 @@ begin
                                 else (others => 'Z');
 
     HOST_CAPTURE <= host_data_capture_o;
-	 host_sync_enable <= HOST_SYNC_EN;
-	 host_sync_i <= HOST_SYNC;
-	 HOST_SYNC_CMD <= host_sync_o;
+    HOST_SYNC_CMD <= '0';
 	 
     host_data_enable_i <= not HOST_DISABLE;
     transfer_direction_i <= to_dac when HOST_DIRECTION = '1'
@@ -142,28 +136,16 @@ begin
         end if;
     end process;
     
-    process (host_data_enable_i, host_sync_i)
-    begin
-        host_sync_o <= host_data_enable_i;
-        if host_data_enable_i = '1' then
-            if rising_edge(host_sync_i) then
-                host_sync_latched <= host_sync_i;
-            end if;
-        else
-            host_sync_latched <= '0';
-        end if;
-    end process;
-    
     process(host_clk_i)
     begin
         if rising_edge(host_clk_i) then
             if transfer_direction_i = to_dac then
                 if codec_clk_tx_i = '1' then
-                    host_data_capture_o <= host_data_enable_i and (host_sync_latched or not host_sync_enable);
+                    host_data_capture_o <= host_data_enable_i;
                 end if;
             else
                 if codec_clk_rx_i = '1' then
-                    host_data_capture_o <= host_data_enable_i and (host_sync_latched or not host_sync_enable);
+                    host_data_capture_o <= host_data_enable_i;
                 end if; 
             end if;
         end if;
