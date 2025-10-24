@@ -345,8 +345,8 @@ void si5351c_set_clock_source(si5351c_driver_t* const drv, const enum pll_source
 bool si5351c_clkin_signal_valid(si5351c_driver_t* const drv)
 {
 	if (detected_platform() == BOARD_ID_HACKRF1_R9) {
-		uint32_t f = clkin_frequency();
-		return (f > 9000000) && (f < 11000000);
+		(void) drv;
+		return true;
 	} else {
 		return (si5351c_read_single(drv, 0) & SI5351C_LOS) == 0;
 	}

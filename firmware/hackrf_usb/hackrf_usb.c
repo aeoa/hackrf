@@ -56,7 +56,6 @@
 #include "portapack.h"
 #include "hackrf_ui.h"
 #include "platform_detect.h"
-#include "clkin.h"
 
 extern uint32_t __m0_start__;
 extern uint32_t __m0_end__;
@@ -289,11 +288,7 @@ int main(void)
 	}
 	operacake_init(operacake_allow_gpio);
 
-	// FIXME: clock detection on r9 only works when calling init twice
-	if (detected_platform() == BOARD_ID_HACKRF1_R9) {
-		clkin_detect_init();
-		clkin_detect_init();
-	}
+    // clkin detection disabled for PPS use; assume external clock present
 
 	while (true) {
 		transceiver_request_t request;

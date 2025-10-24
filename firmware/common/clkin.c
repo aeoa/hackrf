@@ -20,11 +20,13 @@
  */
 
 #include "gpdma.h"
+#include "hackrf_core.h"
 #include <libopencm3/lpc43xx/timer.h>
 #include <libopencm3/lpc43xx/scu.h>
 #include <libopencm3/lpc43xx/gima.h>
 #include <libopencm3/lpc43xx/creg.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #define CLOCK_CYCLES_1_MS     (204000)
 #define MEASUREMENT_WINDOW_MS (50)
@@ -44,11 +46,15 @@ typedef struct {
 	uint32_t second_tcr;
 } tcr_sequence;
 
-dma_lli timer_dma_lli;
-tcr_sequence reset;
+static dma_lli timer_dma_lli;
+static tcr_sequence reset;
+static uint32_t clkin_last_freq = 0;
+static bool clkin_active = false;
 
 void clkin_detect_init(void)
 {
+    clkin_active = true;
+	clkin_last_freq = 0;
 	/* Timer1 triggers periodic measurement */
 	timer_set_prescaler(TIMER1, 0);
 	timer_set_mode(TIMER1, TIMER_CTCR_MODE_TIMER);
@@ -108,5 +114,32 @@ void clkin_detect_init(void)
 
 uint32_t clkin_frequency(void)
 {
-	return TIMER2_CR3 * (1000 / MEASUREMENT_WINDOW_MS);
-};
+	if (clkin_active) {
+		clkin_last_freq = TIMER2_CR3 * (1000 / MEASUREMENT_WINDOW_MS);
+	}
+	return clkin_last_freq;
+}
+
+void clkin_release(void)
+{
+	if (!clkin_active) {
+		return;
+	}
+
+	/* Ensure at least one measurement window elapsed. */
+	for (volatile uint32_t i = 0; i < MEASUREMENT_CYCLES; i++) {
+		__asm__("nop");
+	}
+
+	clkin_last_freq = TIMER2_CR3 * (1000 / MEASUREMENT_WINDOW_MS);
+
+	timer_disable_counter(TIMER1);
+	timer_disable_counter(TIMER2);
+	gpdma_channel_disable(0);
+
+	clkin_active = false;
+
+	/* Return PPS pad to GPIO mode for SGPIO capture. */
+	scu_pinmux(SCU_PINMUX_SGPIO13, SCU_GPIO_FAST | SCU_CONF_FUNCTION0);
+    MMIO32(GPIO_PORT_BASE + 0x2010) &= ~(1 << 8); /* Port 4 DIR register */
+}

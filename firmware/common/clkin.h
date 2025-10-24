@@ -26,5 +26,6 @@
 
 void clkin_detect_init(void);
 uint32_t clkin_frequency(void);
+void clkin_release(void);
 
 #endif //__CLKIN_H__

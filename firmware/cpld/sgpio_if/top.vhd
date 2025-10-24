@@ -90,7 +90,7 @@ begin
                                 else (others => 'Z');
 
     HOST_CAPTURE <= host_data_capture_o;
-    HOST_SYNC_CMD <= '0';
+    HOST_SYNC_CMD <= 'Z';
 	 
     host_data_enable_i <= not HOST_DISABLE;
     transfer_direction_i <= to_dac when HOST_DIRECTION = '1'

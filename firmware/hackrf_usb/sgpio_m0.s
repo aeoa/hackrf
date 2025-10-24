@@ -247,7 +247,6 @@ The rest of this file is organised as follows:
 .equ SLICE5,                               16
 .equ SLICE6,                               32
 .equ SLICE7,                               0
-.equ SLICE_PPS,                            4
 
 /* Allocations of single-use registers */
 
@@ -715,10 +714,19 @@ rx_loop:
 	ldr r3, [sgpio_data, #SLICE7]                   // r3 = SGPIO_REG_SS[SLICE7]            // 10
 	stm buf_ptr!, {r0-r3}                           // buf_ptr[0:16] = r0-r3; buf_ptr += 16 // 5
 
-	// Replace final word in burst with PPS bitmask captured on slice B.
-	ldr r0, [sgpio_data, #SLICE_PPS]                // r0 = SGPIO_REG_SS[PPS]               // 10
-	sub r1, buf_ptr, #4                             // r1 -> last word in burst
-	str r0, [r1]                                    // store PPS mask                       // 2
+	// Replace final word with GPIO Port4 level on bit 8 replicated.
+	ldr r0, =0x400F6110                             // GPIO4_PIN address                    // 2
+	ldr r0, [r0]                                    // read pin state                       // 10
+	movs r1, #128                                   // r1 = 0x80                            // 1
+	lsl r1, r1, #1                                  // r1 = 0x100                          // 1
+	and r1, r0                                      // isolate PPS bit into r1              // 1
+	movs r0, #0                                     // default store value = 0              // 1
+	cmp r1, #0                                      // check if bit set                     // 1
+	beq 1f                                          // if zero, skip setting                // 1/3
+	movs r0, #1                                     // otherwise store 1                    // 1
+1:
+	sub r1, buf_ptr, #4                             // r1 -> last word in burst             // 1
+	str r0, [r1]                                    // store PPS level (bit0)               // 2
 
 	// Update counts.
 	update_counts                                   // update_counts()                      // 4
