@@ -59,8 +59,10 @@ architecture Behavioral of top is
 
     signal host_data_enable_i : std_logic;
     signal host_data_capture_o : std_logic;
-    signal digital_sample_bits : std_logic_vector(15 downto 0) := (others => '0');
+    signal digital_byte_low : std_logic_vector(7 downto 0) := (others => '0');
+    signal digital_byte_high : std_logic_vector(7 downto 0) := (others => '0');
     signal digital_bit_count : std_logic_vector(3 downto 0) := (others => '0');
+    signal digital_send_high : std_logic := '0';
     signal host_sync_meta : std_logic := '0';
     signal host_sync_sync : std_logic := '0';
 
@@ -107,7 +109,10 @@ begin
     tx_q_invert_mask <= X"7f" when q_invert = '1' else X"80";
     
     process(host_clk_i)
-        variable digital_next : std_logic_vector(15 downto 0);
+        variable low_next : std_logic_vector(7 downto 0);
+        variable high_next : std_logic_vector(7 downto 0);
+        variable count_next : std_logic_vector(3 downto 0);
+        variable send_high_next : std_logic;
     begin
         if rising_edge(host_clk_i) then
             codec_clk_rx_i <= CODEC_CLK;
@@ -115,39 +120,63 @@ begin
             host_sync_meta <= HOST_SYNC;
             host_sync_sync <= host_sync_meta;
 
-            -- Capture extension pin once per I sample and pack 16 bits into the final two bytes.
-            if (transfer_direction_i = from_adc) and (host_data_enable_i = '1') then
-                if codec_clk_rx_i = '1' then
-                    digital_next := digital_sample_bits(14 downto 0) & host_sync_sync;
-                    digital_sample_bits <= digital_next;
+            low_next := digital_byte_low;
+            high_next := digital_byte_high;
+            count_next := digital_bit_count;
+            send_high_next := digital_send_high;
 
-                    if digital_bit_count = X"F" then
-                        data_to_host_o <= digital_next(7 downto 0);
+            -- Capture extension pin once per I sample and pack 16 bits into the final two bytes.
+            if transfer_direction_i = from_adc then
+                if host_data_enable_i = '1' then
+                    if codec_clk_rx_i = '1' then
+                        if count_next(3) = '0' then
+                            high_next := high_next(6 downto 0) & host_sync_sync;
+                        else
+                            low_next := low_next(6 downto 0) & host_sync_sync;
+                        end if;
+
+                        if count_next = X"F" then
+                            data_to_host_o <= low_next;
+                            count_next := (others => '0');
+                            send_high_next := '1';
+                        else
+                            -- I: non-inverted between MAX2837 and MAX5864
+                            data_to_host_o <= adc_data_i xor X"80";
+                            count_next := count_next + 1;
+                        end if;
                     else
-                        -- I: non-inverted between MAX2837 and MAX5864
-                        data_to_host_o <= adc_data_i xor X"80";
-                        digital_bit_count <= digital_bit_count + 1;
+                        if send_high_next = '1' then
+                            data_to_host_o <= high_next;
+                            send_high_next := '0';
+                            low_next := (others => '0');
+                            high_next := (others => '0');
+                        else
+                            -- Q: inverted between MAX2837 and MAX5864
+                            data_to_host_o <= adc_data_i xor rx_q_invert_mask;
+                        end if;
                     end if;
                 else
-                    if digital_bit_count = X"F" then
-                        data_to_host_o <= digital_sample_bits(15 downto 8);
-                        digital_bit_count <= (others => '0');
-                    else
-                        -- Q: inverted between MAX2837 and MAX5864
-                        data_to_host_o <= adc_data_i xor rx_q_invert_mask;
-                    end if;
-                end if;
-            else
-                digital_sample_bits <= (others => '0');
-                digital_bit_count <= (others => '0');
-                if transfer_direction_i = from_adc then
+                    count_next := (others => '0');
+                    send_high_next := '0';
+                    low_next := (others => '0');
+                    high_next := (others => '0');
                     if codec_clk_rx_i = '1' then
                         data_to_host_o <= adc_data_i xor X"80";
                     else
                         data_to_host_o <= adc_data_i xor rx_q_invert_mask;
                     end if;
                 end if;
+            else
+                count_next := (others => '0');
+                send_high_next := '0';
+                low_next := (others => '0');
+                high_next := (others => '0');
             end if;
+
+            digital_byte_low <= low_next;
+            digital_byte_high <= high_next;
+            digital_bit_count <= count_next;
+            digital_send_high <= send_high_next;
         end if;
     end process;
     
