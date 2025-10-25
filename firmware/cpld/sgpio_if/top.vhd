@@ -43,7 +43,8 @@ entity top is
         CODEC_CLK       : in    std_logic;
         CODEC_X2_CLK    : in    std_logic;
 
-        HOST_SYNC_DATA  : out   std_logic
+        HOST_SYNC_DATA  : out   std_logic;
+        B2AUX1          : out   std_logic
     );
 
 end top;
@@ -131,6 +132,7 @@ begin
     end process;
 
     HOST_SYNC_DATA <= host_sync_sampled;
+    B2AUX1 <= host_sync_sampled;
     
     process(host_clk_i)
     begin

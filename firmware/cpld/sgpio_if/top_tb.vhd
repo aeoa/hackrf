@@ -36,7 +36,8 @@ ARCHITECTURE behavior OF top_tb IS
         DD : OUT  std_logic_vector(9 downto 0);
         CODEC_CLK : IN  std_logic;
         CODEC_X2_CLK : IN  std_logic;
-        HOST_SYNC_DATA : OUT std_logic
+        HOST_SYNC_DATA : OUT std_logic;
+        B2AUX1 : OUT std_logic
     );
     END COMPONENT;
 
@@ -54,6 +55,7 @@ ARCHITECTURE behavior OF top_tb IS
     signal DD : std_logic_vector(9 downto 0);
     signal HOST_CAPTURE : std_logic;
     signal HOST_SYNC_DATA : std_logic;
+    signal B2AUX1 : std_logic;
     
 begin
  
@@ -66,7 +68,8 @@ begin
         DD => DD,
         CODEC_CLK => CODEC_CLK,
         CODEC_X2_CLK => CODEC_X2_CLK,
-        HOST_SYNC_DATA => HOST_SYNC_DATA
+        HOST_SYNC_DATA => HOST_SYNC_DATA,
+        B2AUX1 => B2AUX1
     );
 
     clk_process :process
