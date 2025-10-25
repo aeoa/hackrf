@@ -35,7 +35,6 @@ entity top is
         HOST_SYNC       : in    std_logic;
         HOST_DISABLE    : in    std_logic;
         HOST_DIRECTION  : in    std_logic;
-        HOST_Q_INVERT   : in    std_logic;
 
         DA              : in    std_logic_vector(7 downto 0);
         DD              : out   std_logic_vector(9 downto 0);
@@ -67,9 +66,6 @@ architecture Behavioral of top is
     signal host_sync_sampled : std_logic := '0';
 
     signal data_to_host_o : std_logic_vector(7 downto 0);
-
-    signal q_invert : std_logic;
-    signal rx_q_invert_mask : std_logic_vector(7 downto 0);
     signal tx_q_invert_mask : std_logic_vector(7 downto 0);
 
 begin
@@ -103,10 +99,7 @@ begin
      
     ------------------------------------------------
         
-    q_invert <= HOST_Q_INVERT;
-    rx_q_invert_mask <= X"80" when q_invert = '1' else X"7f";
-    tx_q_invert_mask <= X"7f" when q_invert = '1' else X"80";
-    
+    q_invert <= '0';
     process(host_clk_i)
     begin
         if rising_edge(host_clk_i) then
@@ -125,7 +118,7 @@ begin
                     data_to_host_o <= adc_data_i xor X"80";
                 else
                     -- Q: inverted between MAX2837 and MAX5864
-                    data_to_host_o <= adc_data_i xor rx_q_invert_mask;
+                    data_to_host_o <= adc_data_i xor X"7f";
                 end if;
             end if;
         end if;
@@ -140,7 +133,7 @@ begin
             codec_clk_tx_i <= CODEC_CLK;
             if transfer_direction_i = to_dac then
                 if codec_clk_tx_i = '1' then
-                    dac_data_o <= (HOST_DATA xor tx_q_invert_mask) & tx_q_invert_mask(0) & tx_q_invert_mask(0);
+                    dac_data_o <= (HOST_DATA xor X"80") & "00";
                 else
                     dac_data_o <= (HOST_DATA xor X"80") & "00";
                 end if;
