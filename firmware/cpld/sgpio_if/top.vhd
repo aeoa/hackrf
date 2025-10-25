@@ -99,7 +99,6 @@ begin
      
     ------------------------------------------------
         
-    q_invert <= '0';
     process(host_clk_i)
     begin
         if rising_edge(host_clk_i) then
