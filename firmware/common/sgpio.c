@@ -48,7 +48,7 @@ void sgpio_configure_pin_functions(sgpio_config_t* const config)
 	scu_pinmux(SCU_PINMUX_SGPIO11, SCU_GPIO_FAST | SCU_CONF_FUNCTION6);
 	scu_pinmux(SCU_PINMUX_SGPIO12, SCU_GPIO_FAST | SCU_CONF_FUNCTION0); /* GPIO0[13] */
 	scu_pinmux(SCU_PINMUX_SGPIO14, SCU_GPIO_FAST | SCU_CONF_FUNCTION4); /* GPIO5[13] */
-	scu_pinmux(SCU_PINMUX_SGPIO15, SCU_GPIO_FAST | SCU_CONF_FUNCTION4); /* GPIO5[14] */
+	scu_pinmux(SCU_PINMUX_SGPIO15, SCU_GPIO_FAST | SCU_CONF_FUNCTION6);
 
 	if (detected_platform() == BOARD_ID_HACKRF1_R9) {
 		scu_pinmux(
@@ -158,6 +158,10 @@ void sgpio_configure(sgpio_config_t* const config, const sgpio_direction_t direc
 		  SGPIO_OUT_MUX_CFG_P_OE_CFG(0)  // dout_oem1 (1-bit mode)
 		| SGPIO_OUT_MUX_CFG_P_OUT_CFG(0) // dout_doutm1 (1-bit mode)
 		;
+	SGPIO_OUT_MUX_CFG(15) =
+		  SGPIO_OUT_MUX_CFG_P_OE_CFG(0)
+		| SGPIO_OUT_MUX_CFG_P_OUT_CFG(0)
+		;
 	// clang-format on
 
 	const uint_fast8_t output_multiplexing_mode =
@@ -230,6 +234,37 @@ void sgpio_configure(sgpio_config_t* const config, const sgpio_direction_t direc
 		// clang-format on
 
 		slice_enable_mask |= (1 << slice_index);
+	}
+
+	if (direction != SGPIO_DIRECTION_TX) {
+		const uint_fast8_t slice_host = SGPIO_SLICE_M;
+
+		SGPIO_MUX_CFG(slice_host) =
+			  SGPIO_MUX_CFG_CONCAT_ORDER(0)
+			| SGPIO_MUX_CFG_CONCAT_ENABLE(0)
+			| SGPIO_MUX_CFG_QUALIFIER_SLICE_MODE(0)
+			| SGPIO_MUX_CFG_QUALIFIER_PIN_MODE(1)
+			| SGPIO_MUX_CFG_QUALIFIER_MODE(3)
+			| SGPIO_MUX_CFG_CLK_SOURCE_SLICE_MODE(0)
+			| SGPIO_MUX_CFG_CLK_SOURCE_PIN_MODE(0)
+			| SGPIO_MUX_CFG_EXT_CLK_ENABLE(1);
+
+		SGPIO_SLICE_MUX_CFG(slice_host) =
+			  SGPIO_SLICE_MUX_CFG_INV_QUALIFIER(0)
+			| SGPIO_SLICE_MUX_CFG_PARALLEL_MODE(0)
+			| SGPIO_SLICE_MUX_CFG_DATA_CAPTURE_MODE(0)
+			| SGPIO_SLICE_MUX_CFG_INV_OUT_CLK(0)
+			| SGPIO_SLICE_MUX_CFG_CLKGEN_MODE(1)
+			| SGPIO_SLICE_MUX_CFG_CLK_CAPTURE_MODE(0)
+			| SGPIO_SLICE_MUX_CFG_MATCH_MODE(0);
+
+		SGPIO_PRESET(slice_host) = 0;
+		SGPIO_COUNT(slice_host) = 0;
+		SGPIO_POS(slice_host) = SGPIO_POS_POS_RESET(pos) | SGPIO_POS_POS(pos);
+		SGPIO_REG(slice_host) = 0x00000000;
+		SGPIO_REG_SS(slice_host) = 0x00000000;
+
+		slice_enable_mask |= (1 << slice_host);
 	}
 
 	if (config->slice_mode_multislice == false) {
