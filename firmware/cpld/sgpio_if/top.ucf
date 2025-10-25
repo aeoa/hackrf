@@ -64,7 +64,7 @@ NET "HOST_Q_INVERT"  LOC = "P70" ;
 NET "HOST_SYNC_EN" LOC = "P90" ; 
 NET "HOST_SYNC"  LOC = "P55" | PULLUP ; 
 NET "HOST_SYNC_CMD"  LOC = "P56" ; 
-NET "HOST_SYNC_DATA" LOC = "P78" ; 
+NET "HOST_SYNC_DATA" LOC = "78" ; 
 
 #PACE: Start of PACE Area Constraints
 
