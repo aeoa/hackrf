@@ -22,6 +22,7 @@
  */
 
 #include "usb_api_transceiver.h"
+#include "pps_capture.h"
 
 #include "hackrf_ui.h"
 #include "operacake_sctimer.h"
@@ -413,14 +414,23 @@ void rx_mode(uint32_t seq)
 	uint32_t usb_count = 0;
 
 	transceiver_startup(TRANSCEIVER_MODE_RX);
+	pps_capture_init();
 
 	baseband_streaming_enable(&sgpio_config);
 
 	while (transceiver_request.seq == seq) {
 		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
+			uint8_t* addr = &usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
+
+			pps_capture_event_t evt;
+			evt.ticks = 0;
+			while (pps_capture_dequeue(&evt)) {}
+
+			*(uint32_t*)addr = debug_counter_irq_handler;
+
 			usb_transfer_schedule_block(
 				&usb_endpoint_bulk_in,
-				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
+				addr,
 				USB_TRANSFER_SIZE,
 				transceiver_bulk_transfer_complete,
 				NULL);
@@ -428,6 +438,7 @@ void rx_mode(uint32_t seq)
 		}
 	}
 
+	pps_capture_shutdown();
 	transceiver_shutdown();
 }
 
