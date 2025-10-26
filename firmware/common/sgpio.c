@@ -150,9 +150,13 @@ void sgpio_configure(sgpio_config_t* const config, const sgpio_direction_t direc
 		  SGPIO_OUT_MUX_CFG_P_OE_CFG(0)  // gpio_oe (state set by GPIO_OEREG)
 		| SGPIO_OUT_MUX_CFG_P_OUT_CFG(4) // gpio_out (level set by GPIO_OUTREG)
 		;
-    SGPIO_OUT_MUX_CFG(11) = // GPIO11: Output: direction
+	SGPIO_OUT_MUX_CFG(11) = // GPIO11: Output: direction
 		  SGPIO_OUT_MUX_CFG_P_OE_CFG(0)  // gpio_oe (state set by GPIO_OEREG)
 		| SGPIO_OUT_MUX_CFG_P_OUT_CFG(4) // gpio_out (level set by GPIO_OUTREG)
+		;
+	SGPIO_OUT_MUX_CFG(12) =
+		  SGPIO_OUT_MUX_CFG_P_OE_CFG(0)
+		| SGPIO_OUT_MUX_CFG_P_OUT_CFG(0)
 		;
 	SGPIO_OUT_MUX_CFG(14) = // SGPIO14: Output: internal GPDMA burst request
 		  SGPIO_OUT_MUX_CFG_P_OE_CFG(0)  // dout_oem1 (1-bit mode)

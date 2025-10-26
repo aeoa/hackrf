@@ -46,7 +46,7 @@ void hackrf_ui_set_filter_null(const rf_path_filter_t filter) { UNUSED(filter); 
 void hackrf_ui_set_antenna_bias_null(bool antenna_bias) { UNUSED(antenna_bias); }
 void hackrf_ui_set_clock_source_null(clock_source_t source) { UNUSED(source); }
 void hackrf_ui_set_transceiver_mode_null(transceiver_mode_t mode) { UNUSED(mode); }
-bool hackrf_ui_operacake_gpio_compatible_null(void) { return true; }
+bool hackrf_ui_operacake_gpio_compatible_null(void) { return false; }
 
 // clang-format on
 

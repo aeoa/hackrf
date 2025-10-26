@@ -713,8 +713,9 @@ rx_loop:
 	ldr r1, [sgpio_data, #SLICE5]                   // r1 = SGPIO_REG_SS[SLICE5]            // 10
 	ldr r2, [sgpio_data, #SLICE6]                   // r2 = SGPIO_REG_SS[SLICE6]            // 10
 	ldr r3, [sgpio_data, #SLICE_HOST]               // r3 = SGPIO_REG_SS[HOST]             // 10
+	lsl r3, r3, #16                                 // keep lower 16 bits only              // 1
+	lsr r3, r3, #16                                 // restore masked value                 // 1
 	stm buf_ptr!, {r0-r3}                           // buf_ptr[0:16] = r0-r3; buf_ptr += 16 // 5
-
 	// Update counts.
 	update_counts                                   // update_counts()                      // 4
 

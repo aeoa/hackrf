@@ -281,13 +281,13 @@ int main(void)
 
 	rf_path_init(&rf_path);
 
-	bool operacake_allow_gpio;
-	if (hackrf_ui()->operacake_gpio_compatible()) {
-		operacake_allow_gpio = true;
-	} else {
-		operacake_allow_gpio = false;
-	}
-	operacake_init(operacake_allow_gpio);
+	// bool operacake_allow_gpio;
+	// if (hackrf_ui()->operacake_gpio_compatible()) {
+	// 	operacake_allow_gpio = true;
+	// } else {
+	// 	operacake_allow_gpio = false;
+	// }
+	// operacake_init(operacake_allow_gpio);
 
 	// FIXME: clock detection on r9 only works when calling init twice
 	if (detected_platform() == BOARD_ID_HACKRF1_R9) {
