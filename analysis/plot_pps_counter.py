@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 
 import argparse
+import warnings
 from pathlib import Path
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 def parse_args():
@@ -27,7 +28,7 @@ def parse_args():
     parser.add_argument(
         "--metadata-bytes",
         type=int,
-        default=4,
+        default=8,
         help="Metadata bytes at start of each chunk (default: 4 = SCT_COUNT).",
     )
     parser.add_argument(
@@ -55,22 +56,57 @@ def parse_args():
     return parser.parse_args()
 
 
+CHUNK_START_MARKER = 0xDEADBEEF
+
+
+def find_chunk_offsets(data: np.memmap) -> np.ndarray:
+    """Return sorted byte offsets for every occurrence of the marker."""
+    offsets = []
+    for byte_offset in range(4):
+        remaining = data.size - byte_offset
+        if remaining < 4:
+            continue
+        usable = remaining - (remaining % 4)
+        words = data[byte_offset : byte_offset + usable].view("<u4")
+        matches = np.flatnonzero(words == CHUNK_START_MARKER)
+        if matches.size:
+            offsets.extend(byte_offset + matches.astype(np.int64) * 4)
+    if not offsets:
+        raise ValueError("Could not find a chunk start marker (0xDEADBEEF).")
+    return np.asarray(sorted(offsets), dtype=np.int64)
+
+
 def load_metadata(path: Path, chunk_size: int, metadata_bytes: int) -> np.ndarray:
     data = np.memmap(path, dtype=np.uint8, mode="r")
-    chunk_count = data.size // chunk_size
-    if chunk_count == 0:
-        raise ValueError("File does not contain a full chunk.")
+    chunk_offsets = find_chunk_offsets(data)
+    full_chunk_mask = (data.size - chunk_offsets) >= chunk_size
+    valid_offsets = chunk_offsets[full_chunk_mask]
+    if valid_offsets.size == 0:
+        raise ValueError("File does not contain a full chunk after the marker.")
 
-    trimmed = data[: chunk_count * chunk_size]
-    chunks = trimmed.reshape(chunk_count, chunk_size)
+    diffs = np.diff(valid_offsets)
+    mismatch_indices = np.where(diffs != chunk_size)[0]
+    if mismatch_indices.size:
+        problem_offsets = ", ".join(
+            f"{valid_offsets[idx]}->{valid_offsets[idx + 1]}"
+            for idx in mismatch_indices[:5]
+        )
+        warnings.warn(
+            "Chunk start markers are not spaced exactly chunk_size apart "
+            f"at offsets: {problem_offsets}",
+            RuntimeWarning,
+        )
+
     if metadata_bytes % 4 != 0:
         raise ValueError("metadata_bytes must be a multiple of 4.")
     if metadata_bytes > chunk_size:
         raise ValueError("metadata_bytes cannot exceed chunk size.")
 
-    metadata = chunks[:, :metadata_bytes].copy()
+    metadata = np.empty((valid_offsets.size, metadata_bytes), dtype=np.uint8)
+    for idx, offset in enumerate(valid_offsets):
+        metadata[idx] = data[offset : offset + metadata_bytes]
     word_count = metadata_bytes // 4
-    return metadata.view("<u4").reshape(chunk_count, word_count)
+    return metadata.view("<u4").reshape(valid_offsets.size, word_count)
 
 
 def build_time_axis(
@@ -122,7 +158,8 @@ def main():
     axes = axes[:len(fields)]
 
     labels = {
-        0: "SCT_COUNT",
+        0: "DEADBEEF",
+        1: "SCT_COUNT",
     }
 
     for ax, field_idx in zip(axes, fields):

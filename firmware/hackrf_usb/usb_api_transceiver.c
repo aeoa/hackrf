@@ -25,7 +25,7 @@
 
 #include "hackrf_ui.h"
 #include "operacake_sctimer.h"
-#include "pps_counter.h"
+#include "sample_counter.h"
 
 #include <libopencm3/cm3/vector.h>
 #include "usb_bulk_buffer.h"
@@ -420,7 +420,8 @@ void rx_mode(uint32_t seq)
 	while (transceiver_request.seq == seq) {
 		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
 			uint8_t* addr = &usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
-			*(uint32_t*) addr = pps_counter_read();
+			((uint32_t*)addr)[0] = 0xDEADBEEF;
+			((uint32_t*)addr)[1] = sample_counter_read();
 
 			usb_transfer_schedule_block(
 				&usb_endpoint_bulk_in,

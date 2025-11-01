@@ -8,7 +8,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-void pps_counter_init(void);
-uint32_t pps_counter_read(void);
+uint32_t sample_counter_read(void);
 
 #endif /* HACKRF_USB_PPS_COUNTER_H */
