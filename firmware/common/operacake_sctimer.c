@@ -104,8 +104,8 @@ void operacake_sctimer_init()
 	// Halt the SCTimer to enable it to be configured
 	SCT_CTRL = SCT_CTRL_HALT_L(1);
 
-	// Prescaler - run at half the SGPIO clock (ie: at the sample clock)
-	SCT_CTRL |= SCT_CTRL_PRE_L(1);
+	// Prescaler - run at the SGPIO clock (ie: at 2x the sample clock)
+	SCT_CTRL &= ~SCT_CTRL_PRE_L_MASK;
 
 	// Default to state 0, events disabled
 	SCT_STATE = 0;

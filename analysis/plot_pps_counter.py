@@ -162,6 +162,15 @@ def main():
         1: "SCT_COUNT",
     }
 
+    has_value = metadata[:,1] != 0
+    value = metadata[has_value,2]
+    print(value)
+    delta = np.diff(value)
+    print(delta)
+
+    plt.hist(delta)
+    plt.show()
+
     for ax, field_idx in zip(axes, fields):
         ax.plot(times, metadata[:, field_idx], marker=".", linestyle="-")
         ax.set_ylabel(labels.get(field_idx, f"Word {field_idx}"))
