@@ -739,22 +739,17 @@ rx_loop:
 	ldr r2, [state, #SAMPLE_COUNTER]                // r2 = sample counter                  // 2
 	mov r0, count                                   // r0 = count                           // 1
 	lsl r0, r0, #18                                 // shift low bits, capture block bit    // 1
-	bne 2f                                          // not start of block                   // 1 thru, 3 taken
-	bcs 1f                                          // carry set => block 1                 // 1 thru, 3 taken
+	bne increment_sample_counter                    // not start of block                   // 1 thru, 3 taken
+	bcs write_block1_sample                         // carry set => block 1                 // 1 thru, 3 taken
+write_block0_sample:
 	str r2, [state, #RX_BLOCK0_SAMPLE]              // block0 sample index                  // 2
-	b 4f                                            //                                      // 3
-1:
+	b increment_sample_counter                      //                                      // 3
+write_block1_sample:
 	str r2, [state, #RX_BLOCK1_SAMPLE]              // block1 sample index                  // 2
-4:
-	mov r0, #16                                     // r0 = 16                              // 1
-	add r2, r2, r0                                  // r2 += 16                             // 1
+increment_sample_counter:
+	add r2, #16                                     // r2 += 16                             // 1
 	str r2, [state, #SAMPLE_COUNTER]                // store updated counter                // 2
-	b 5f                                            //                                      // 3
-2:
-	mov r0, #16                                     // r0 = 16                              // 1
-	add r2, r2, r0                                  // r2 += 16                             // 1
-	str r2, [state, #SAMPLE_COUNTER]                // store updated counter                // 2
-5:
+
 	// Read data from SGPIO.
 	ldr r0, [sgpio_data, #SLICE0]                   // r0 = SGPIO_REG_SS[SLICE0]            // 10
 	ldr r1, [sgpio_data, #SLICE1]                   // r1 = SGPIO_REG_SS[SLICE1]            // 10
