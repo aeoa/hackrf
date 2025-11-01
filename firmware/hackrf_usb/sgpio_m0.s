@@ -736,31 +736,25 @@ rx_loop:
 	update_buf_ptr                                  // update_buf_ptr()                     // 3
 
 	// If this is the first chunk in a USB transfer block, record its sample index.
-	ldr r2, [state, #SAMPLE_COUNTER]               // r2 = sample counter                   // 2
-	mov r0, buf_mask                               // r0 = 0x7fff                           // 1
-	lsr r0, r0, #1                                 // r0 = 0x3fff                           // 1
-	mov r1, count                                  // r1 = count                            // 1
-	mov r3, r1                                     // r3 = count                            // 1
-	and r3, r0                                     // r3 &= 0x3fff                          // 1
-	bne 2f                                         // not start of block                    // 1 thru, 3 taken
-	mov r0, #0x40                                  // r0 = 0x40                             // 1
-	lsl r0, r0, #8                                 // r0 = 0x4000                           // 1
-	tst r1, r0                                     // test block select bit                 // 1
-	bne 1f                                         // block 1                               // 1 thru, 3 taken
-	str r2, [state, #RX_BLOCK0_SAMPLE]             // block0 sample index                   // 2
-	b 3f                                           //                                       // 3
+	ldr r2, [state, #SAMPLE_COUNTER]                // r2 = sample counter                  // 2
+	mov r0, count                                   // r0 = count                           // 1
+	lsl r0, r0, #18                                 // shift low bits, capture block bit    // 1
+	bne 2f                                          // not start of block                   // 1 thru, 3 taken
+	bcs 1f                                          // carry set => block 1                 // 1 thru, 3 taken
+	str r2, [state, #RX_BLOCK0_SAMPLE]              // block0 sample index                  // 2
+	b 4f                                            //                                      // 3
 1:
-	str r2, [state, #RX_BLOCK1_SAMPLE]             // block1 sample index                   // 2
-3:
-	mov r0, #16                                    // r0 = 16                               // 1
-	add r2, r0                                     // r2 += 16                              // 1
-	str r2, [state, #SAMPLE_COUNTER]               // store updated counter                 // 2
-	b 4f                                           //                                       // 3
-2:
-	mov r0, #16                                    // r0 = 16                               // 1
-	add r2, r0                                     // r2 += 16                              // 1
-	str r2, [state, #SAMPLE_COUNTER]               // store updated counter                 // 2
+	str r2, [state, #RX_BLOCK1_SAMPLE]              // block1 sample index                  // 2
 4:
+	mov r0, #16                                     // r0 = 16                              // 1
+	add r2, r2, r0                                  // r2 += 16                             // 1
+	str r2, [state, #SAMPLE_COUNTER]                // store updated counter                // 2
+	b 5f                                            //                                      // 3
+2:
+	mov r0, #16                                     // r0 = 16                              // 1
+	add r2, r2, r0                                  // r2 += 16                             // 1
+	str r2, [state, #SAMPLE_COUNTER]                // store updated counter                // 2
+5:
 	// Read data from SGPIO.
 	ldr r0, [sgpio_data, #SLICE0]                   // r0 = SGPIO_REG_SS[SLICE0]            // 10
 	ldr r1, [sgpio_data, #SLICE1]                   // r1 = SGPIO_REG_SS[SLICE1]            // 10
@@ -809,7 +803,7 @@ rx_shortfall:
 	// Advance sample counter even though data is dropped.
 	ldr r0, [state, #SAMPLE_COUNTER]               // r0 = sample counter                   // 2
 	mov r1, #16                                    // r1 = 16                               // 1
-	add r0, r1                                     // r0 += 16                              // 1
+	add r0, r0, r1                                 // r0 += 16                              // 1
 	str r0, [state, #SAMPLE_COUNTER]               // store updated counter                 // 2
 
 	// Run common shortfall handling and jump back to RX loop.
