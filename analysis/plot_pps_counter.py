@@ -28,7 +28,7 @@ def parse_args():
     parser.add_argument(
         "--metadata-bytes",
         type=int,
-        default=8,
+        default=4*6,
         help="Metadata bytes at start of each chunk (default: 4 = SCT_COUNT).",
     )
     parser.add_argument(

@@ -49,6 +49,9 @@
 #include "usb_api_sweep.h"
 
 #define USB_TRANSFER_SIZE 0x4000
+#define SAMPLE_COUNTER_HEADER_MAX_EVENTS 8U
+#define SAMPLE_COUNTER_HEADER_WORDS \
+	(2U + (SAMPLE_COUNTER_HEADER_MAX_EVENTS * 2U))
 
 typedef struct {
 	uint32_t freq_mhz;
@@ -414,14 +417,31 @@ void rx_mode(uint32_t seq)
 	uint32_t usb_count = 0;
 
 	transceiver_startup(TRANSCEIVER_MODE_RX);
+	sample_counter_capture_enable();
 
 	baseband_streaming_enable(&sgpio_config);
 
 	while (transceiver_request.seq == seq) {
 		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
 			uint8_t* addr = &usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
-			((uint32_t*)addr)[0] = 0xDEADBEEF;
-			((uint32_t*)addr)[1] = sample_counter_read();
+			uint32_t* header = (uint32_t*) addr;
+			sample_counter_event_t events[SAMPLE_COUNTER_HEADER_MAX_EVENTS];
+			const size_t event_count = sample_counter_capture_drain(
+				events,
+				SAMPLE_COUNTER_HEADER_MAX_EVENTS);
+
+			size_t header_index = 0;
+			header[header_index++] = 0xDEADBEEF;
+			header[header_index++] = (uint32_t) event_count;
+
+			for (size_t i = 0; i < event_count; ++i) {
+				header[header_index++] = events[i].timestamp;
+				header[header_index++] = (uint32_t) events[i].edge;
+			}
+
+			for (; header_index < SAMPLE_COUNTER_HEADER_WORDS; ++header_index) {
+				header[header_index] = 0;
+			}
 
 			usb_transfer_schedule_block(
 				&usb_endpoint_bulk_in,
@@ -433,6 +453,7 @@ void rx_mode(uint32_t seq)
 		}
 	}
 
+	sample_counter_capture_disable();
 	transceiver_shutdown();
 }
 
