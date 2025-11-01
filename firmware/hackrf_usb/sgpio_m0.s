@@ -309,6 +309,8 @@ buf_ptr           .req r4
 	flag .req r2
 	ldr mode, [state, #REQUESTED_MODE]              // mode = state.requested_mode          // 2
 	lsr flag, mode, #16                             // flag = mode >> 16                    // 1
+	// The following needed to be adapted to avoid branch out of range error
+	// bne \label                                   // if flag != 0: goto label             // 1 thru, 3 taken
 	beq 1f                                          // if flag == 0: skip branch            // 1 thru, 3 taken
 	ldr r0, =\label                                 // r0 = &label                          // 2
 	mov r1, #1                                      // r1 = 1                               // 1
@@ -637,24 +639,6 @@ tx_loop:
 	// Update buffer pointer.
 	update_buf_ptr                                  // update_buf_ptr()                     // 3
 
-	// If this is the first chunk in a USB transfer block, record its sample index.
-	mov r0, buf_mask                               // r0 = 0x7fff                          // 1
-	lsr r0, r0, #1                                 // r0 = 0x3fff                          // 1
-	mov r1, count                                  // r1 = count                           // 1
-	tst r1, r0                                     // check if within block                // 1
-	bne 2f                                         // not start of block                   // 1 thru, 3 taken
-	mov r2, #0x40                                  // r2 = 0x40                            // 1
-	lsl r2, r2, #8                                 // r2 = 0x4000                          // 1
-	tst count, r2                                  // test block select bit                // 1
-	mov r1, count                                  // r1 = count                           // 1
-	lsr r1, r1, #1                                 // r1 = sample index                    // 1
-	bne 1f                                         // if bit set: block 1                  // 1 thru, 3 taken
-	str r1, [state, #RX_BLOCK0_SAMPLE]            // block0 sample index                   // 2
-	b 2f                                           //                                      // 3
-1:
-	str r1, [state, #RX_BLOCK1_SAMPLE]            // block1 sample index                   // 2
-2:
-
 	// At this point we know there is TX data available.
 	// Set active mode to TX_RUN (it might still be TX_START).
 	mov mode, #MODE_TX_RUN                          // mode = TX_RUN                        // 1
@@ -766,6 +750,8 @@ increment_sample_counter:
 	update_counts                                   // update_counts()                      // 4
 
 	// Jump to next mode if threshold reached, or back to RX loop start.
+	// The following macro needed to be inlined and adapted to avoid branch out of range
+	// jump_next_mode rx                            // jump_next_mode()                     // 12
 	ldr r0, [state, #THRESHOLD]                     // r0 = state.threshold                 // 2
 	cmp count, r0                                   // compare count to threshold           // 1
 	beq 1f                                          // if equal, change mode                // 1 thru, 3 taken
@@ -797,8 +783,7 @@ rx_shortfall:
 
 	// Advance sample counter even though data is dropped.
 	ldr r0, [state, #SAMPLE_COUNTER]               // r0 = sample counter                   // 2
-	mov r1, #16                                    // r1 = 16                               // 1
-	add r0, r0, r1                                 // r0 += 16                              // 1
+	add r0, #16                                    // r0 += 16                              // 1
 	str r0, [state, #SAMPLE_COUNTER]               // store updated counter                 // 2
 
 	// Run common shortfall handling and jump back to RX loop.
