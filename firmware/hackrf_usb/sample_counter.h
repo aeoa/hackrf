@@ -10,8 +10,9 @@
 #include <stdint.h>
 
 typedef enum {
-	SAMPLE_COUNTER_EDGE_FALLING = 0,
-	SAMPLE_COUNTER_EDGE_RISING = 1,
+	SAMPLE_COUNTER_NO_EDGE = 0,
+	SAMPLE_COUNTER_EDGE_FALLING = 1,
+	SAMPLE_COUNTER_EDGE_RISING = 2,
 } sample_counter_edge_t;
 
 typedef struct sample_counter_event {

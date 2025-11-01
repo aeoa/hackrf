@@ -43,15 +43,19 @@
 #include "platform_detect.h"
 
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "usb_endpoint.h"
 #include "usb_api_sweep.h"
 
 #define USB_TRANSFER_SIZE 0x4000
+#define USB_TRANSFER_SHIFT 14U
+#define USB_SAMPLES_PER_TRANSFER (USB_TRANSFER_SIZE / 2U)
 #define SAMPLE_COUNTER_HEADER_MAX_EVENTS 8U
-#define SAMPLE_COUNTER_HEADER_WORDS \
-	(2U + (SAMPLE_COUNTER_HEADER_MAX_EVENTS * 2U))
+#define SAMPLE_HEADER_WORDS \
+	(4U + (SAMPLE_COUNTER_HEADER_MAX_EVENTS * 2U))
+#define SAMPLE_HEADER_MAGIC 0xDEADBEEF
 
 typedef struct {
 	uint32_t freq_mhz;
@@ -74,6 +78,12 @@ typedef struct {
 } set_sample_r_params_t;
 
 set_sample_r_params_t set_sample_r_params;
+
+static uint32_t block_first_sample(uint32_t block_index)
+{
+	return (block_index == 0U) ? m0_state.block0_first_sample :
+		m0_state.block1_first_sample;
+}
 
 usb_request_status_t usb_vendor_request_set_baseband_filter_bandwidth(
 	usb_endpoint_t* const endpoint,
@@ -425,21 +435,28 @@ void rx_mode(uint32_t seq)
 		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
 			uint8_t* addr = &usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
 			uint32_t* header = (uint32_t*) addr;
+
+			const uint32_t block_index = (usb_count >> USB_TRANSFER_SHIFT) & 0x1U;
+			const uint32_t first_sample = block_first_sample(block_index);
+			const uint32_t last_sample = first_sample + USB_SAMPLES_PER_TRANSFER;
+
+			size_t header_index = 0;
+			header[header_index++] = SAMPLE_HEADER_MAGIC;
+			header[header_index++] = first_sample;
+			header[header_index++] = last_sample;
+
 			sample_counter_event_t events[SAMPLE_COUNTER_HEADER_MAX_EVENTS];
 			const size_t event_count = sample_counter_capture_drain(
 				events,
 				SAMPLE_COUNTER_HEADER_MAX_EVENTS);
 
-			size_t header_index = 0;
-			header[header_index++] = 0xDEADBEEF;
 			header[header_index++] = (uint32_t) event_count;
-
 			for (size_t i = 0; i < event_count; ++i) {
 				header[header_index++] = events[i].timestamp;
 				header[header_index++] = (uint32_t) events[i].edge;
 			}
 
-			for (; header_index < SAMPLE_COUNTER_HEADER_WORDS; ++header_index) {
+			for (; header_index < SAMPLE_HEADER_WORDS; ++header_index) {
 				header[header_index] = 0;
 			}
 

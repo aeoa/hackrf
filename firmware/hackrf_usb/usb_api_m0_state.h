@@ -38,6 +38,10 @@ struct m0_state {
 	uint32_t threshold;
 	uint32_t next_mode;
 	uint32_t error;
+	uint32_t prev_longest_shortfall;
+	uint32_t sample_counter;
+	uint32_t block0_first_sample;
+	uint32_t block1_first_sample;
 };
 
 enum m0_mode {

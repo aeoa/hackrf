@@ -168,8 +168,8 @@ def main():
     delta = np.diff(value)
     print(delta)
 
-    plt.hist(delta)
-    plt.show()
+    # plt.hist(delta)
+    # plt.show()
 
     for ax, field_idx in zip(axes, fields):
         ax.plot(times, metadata[:, field_idx], marker=".", linestyle="-")
