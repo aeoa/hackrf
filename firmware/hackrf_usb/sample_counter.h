@@ -17,7 +17,7 @@ typedef enum {
 
 typedef struct sample_counter_event {
 	uint32_t timestamp;
-	sample_counter_edge_t edge;
+	uint32_t edge;
 } sample_counter_event_t;
 
 uint32_t sample_counter_read(void);

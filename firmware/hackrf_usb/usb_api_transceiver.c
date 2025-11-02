@@ -416,15 +416,40 @@ usb_request_status_t usb_vendor_request_set_rx_overrun_limit(
 	return USB_REQUEST_STATUS_OK;
 }
 
-void transceiver_bulk_transfer_complete(void* user_data, unsigned int bytes_transferred)
+void transmitter_bulk_transfer_complete(void* user_data, unsigned int bytes_transferred)
 {
 	(void) user_data;
 	m0_state.m4_count += bytes_transferred;
 }
 
+void receiver_header_transfer_complete(void* user_data, unsigned int bytes_transferred)
+{
+	(void) user_data;
+	(void) bytes_transferred;
+	m0_state.m4_count += USB_TRANSFER_SIZE;
+}
+
+volatile bool start_header_transfer = false;
+
+void receiver_bulk_transfer_complete(void* user_data, unsigned int bytes_transferred)
+{
+	(void) user_data;
+	(void) bytes_transferred;
+
+	start_header_transfer = true;
+}
+
+typedef enum {
+	RX_TRANSFER_IQ,
+	RX_TRANSFER_HEADER
+} RxState;
+
 void rx_mode(uint32_t seq)
 {
+	RxState rx_state = RX_TRANSFER_IQ;
 	uint32_t usb_count = 0;
+	void* addr = 0;
+	uint32_t first_sample = 0;
 
 	transceiver_startup(TRANSCEIVER_MODE_RX);
 	sample_counter_capture_enable();
@@ -432,41 +457,51 @@ void rx_mode(uint32_t seq)
 	baseband_streaming_enable(&sgpio_config);
 
 	while (transceiver_request.seq == seq) {
-		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
-			uint8_t* addr = &usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
-			uint32_t* header = (uint32_t*) addr;
+		switch (rx_state) {
+			case RX_TRANSFER_IQ: {
+				if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
+					addr = &usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
+					start_header_transfer = false;
+					uint32_t const block_index = (usb_count >> USB_TRANSFER_SHIFT) & 0x1U;
+					first_sample = block_first_sample(block_index);
 
-			const uint32_t block_index = (usb_count >> USB_TRANSFER_SHIFT) & 0x1U;
-			const uint32_t first_sample = block_first_sample(block_index);
-			const uint32_t last_sample = first_sample + USB_SAMPLES_PER_TRANSFER;
 
-			size_t header_index = 0;
-			header[header_index++] = SAMPLE_HEADER_MAGIC;
-			header[header_index++] = first_sample;
-			header[header_index++] = last_sample;
+					usb_transfer_schedule_block(
+						&usb_endpoint_bulk_in,
+						addr,
+						USB_TRANSFER_SIZE,
+						receiver_bulk_transfer_complete,
+						addr);
+					usb_count += USB_TRANSFER_SIZE;
 
-			sample_counter_event_t events[SAMPLE_COUNTER_HEADER_MAX_EVENTS];
-			const size_t event_count = sample_counter_capture_drain(
-				events,
-				SAMPLE_COUNTER_HEADER_MAX_EVENTS);
-
-			header[header_index++] = (uint32_t) event_count;
-			for (size_t i = 0; i < event_count; ++i) {
-				header[header_index++] = events[i].timestamp;
-				header[header_index++] = (uint32_t) events[i].edge;
+					rx_state = RX_TRANSFER_HEADER;
+				}
+				break;
 			}
 
-			for (; header_index < SAMPLE_HEADER_WORDS; ++header_index) {
-				header[header_index] = 0;
-			}
+			case RX_TRANSFER_HEADER: {
+				if (start_header_transfer) {
+					int header_size = 512;
+					memset(addr, 0, header_size);
+					uint32_t* header = (uint32_t*)addr;
 
-			usb_transfer_schedule_block(
-				&usb_endpoint_bulk_in,
-				addr,
-				USB_TRANSFER_SIZE,
-				transceiver_bulk_transfer_complete,
-				NULL);
-			usb_count += USB_TRANSFER_SIZE;
+					header[0] = SAMPLE_HEADER_MAGIC;
+					header[1] = first_sample;
+					header[2] = sample_counter_capture_drain(
+						(struct sample_counter_event*)&header[3],
+						SAMPLE_COUNTER_HEADER_MAX_EVENTS);
+
+					usb_transfer_schedule_block(
+						&usb_endpoint_bulk_in,
+						addr,
+						header_size,
+						receiver_header_transfer_complete,
+						NULL);
+
+					rx_state = RX_TRANSFER_IQ;
+				}
+				break;
+			}
 		}
 	}
 
@@ -486,7 +521,7 @@ void tx_mode(uint32_t seq)
 		&usb_endpoint_bulk_out,
 		&usb_bulk_buffer[0x0000],
 		USB_TRANSFER_SIZE,
-		transceiver_bulk_transfer_complete,
+		transmitter_bulk_transfer_complete,
 		NULL);
 	usb_count += USB_TRANSFER_SIZE;
 
@@ -501,7 +536,7 @@ void tx_mode(uint32_t seq)
 				&usb_endpoint_bulk_out,
 				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
 				USB_TRANSFER_SIZE,
-				transceiver_bulk_transfer_complete,
+				transmitter_bulk_transfer_complete,
 				NULL);
 			usb_count += USB_TRANSFER_SIZE;
 		}
