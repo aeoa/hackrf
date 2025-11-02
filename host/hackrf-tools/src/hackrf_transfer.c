@@ -338,6 +338,8 @@ volatile uint32_t byte_count = 0;
 bool signalsource = false;
 uint32_t amplitude = 0;
 
+bool include_rx_metadata = false;
+
 bool hw_sync = false;
 
 bool receive = false;
@@ -413,6 +415,18 @@ int rx_callback(hackrf_transfer* transfer)
 	if (file == NULL) {
 		stop_main_loop();
 		return -1;
+	}
+
+	if (include_rx_metadata && transfer->metadata != NULL && transfer->metadata_length > 0) {
+		size_t metadata_written = fwrite(
+			transfer->metadata,
+			1,
+			transfer->metadata_length,
+			file);
+		if (metadata_written != transfer->metadata_length) {
+			stop_main_loop();
+			return -1;
+		}
 	}
 
 	/* Accumulate power (magnitude squared). */
@@ -658,6 +672,7 @@ static void usage()
 	printf("\t-h # this help\n");
 	printf("\t[-d serial_number] # Serial number of desired HackRF.\n");
 	printf("\t-r <filename> # Receive data into file (use '-' for stdout).\n");
+	printf("\t[-M] # Include per-block metadata in the output stream.\n");
 	printf("\t-t <filename> # Transmit data from file (use '-' for stdin).\n");
 	printf("\t-w # Receive data into file with WAV header and automatic name.\n");
 	printf("\t   # This is for SDR# compatibility and may not work with other software.\n");
@@ -749,7 +764,7 @@ int main(int argc, char** argv)
 	hackrf_m0_state state;
 	stats_t stats = {0, 0};
 
-	while ((opt = getopt(argc, argv, "Hwr:t:f:i:o:m:a:p:s:Fn:b:l:g:x:c:d:C:RS:Bh?")) !=
+	while ((opt = getopt(argc, argv, "Hwr:t:f:i:o:m:a:p:s:Fn:b:l:g:x:c:d:C:RS:BMh?")) !=
 	       EOF) {
 		result = HACKRF_SUCCESS;
 		switch (opt) {
@@ -857,19 +872,23 @@ int main(int argc, char** argv)
 			result = parse_u32(optarg, &amplitude);
 			break;
 
-		case 'R':
-			repeat = true;
-			break;
+	case 'R':
+		repeat = true;
+		break;
 
-		case 'C':
-			crystal_correct = true;
-			result = parse_u32(optarg, &crystal_correct_ppm);
-			break;
+	case 'C':
+		crystal_correct = true;
+		result = parse_u32(optarg, &crystal_correct_ppm);
+		break;
 
-		case 'h':
-		case '?':
-			usage();
-			return EXIT_SUCCESS;
+	case 'M':
+		include_rx_metadata = true;
+		break;
+
+	case 'h':
+	case '?':
+		usage();
+		return EXIT_SUCCESS;
 
 		default:
 			fprintf(stderr, "unknown argument '-%c %s'\n", opt, optarg);
@@ -1092,6 +1111,12 @@ int main(int argc, char** argv)
 			usage();
 			return EXIT_FAILURE;
 		}
+	}
+
+	if (include_rx_metadata && receive_wav) {
+		fprintf(stderr, "argument error: -M cannot be combined with -w.\n");
+		usage();
+		return EXIT_FAILURE;
 	}
 
 	if (receive_wav) {

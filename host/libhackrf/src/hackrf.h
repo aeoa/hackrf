@@ -857,6 +857,15 @@ enum sweep_style {
  */
 typedef struct hackrf_device hackrf_device;
 
+#define HACKRF_RX_METADATA_MAGIC 0xDEADBEEF
+#define HACKRF_RX_METADATA_MAX_EVENTS 8U
+#define HACKRF_RX_METADATA_MAX_LEN 512U
+
+typedef struct {
+	uint32_t timestamp;
+	uint32_t edge;
+} hackrf_rx_metadata_event_t;
+
 /**
  * USB transfer information passed to RX or TX callback.
  * A callback should treat all these fields as read-only except that a TX
@@ -877,6 +886,10 @@ typedef struct {
 	void* rx_ctx;
 	/** User provided TX context. Not used by the library, but available to transfer callbacks for use. Set along with the transfer callback using @ref hackrf_start_tx*/
 	void* tx_ctx;
+	/** Optional metadata associated with this RX transfer. */
+	const uint8_t* metadata;
+	/** Length of the metadata buffer when metadata is present. */
+	size_t metadata_length;
 } hackrf_transfer;
 
 /**

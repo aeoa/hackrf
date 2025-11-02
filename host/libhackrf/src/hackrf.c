@@ -130,6 +130,8 @@ typedef enum {
 #define TRANSFER_BUFFER_SIZE  262144
 #define DEVICE_BUFFER_SIZE    32768
 #define USB_MAX_SERIAL_LENGTH 32
+#define HACKRF_RX_IQ_BLOCK_BYTES 0x4000
+#define HACKRF_RX_METADATA_MIN_BYTES (3U * sizeof(uint32_t))
 
 struct hackrf_device {
 	libusb_device_handle* usb_device;
@@ -152,7 +154,148 @@ struct hackrf_device {
 	hackrf_flush_cb_fn flush_callback;
 	hackrf_tx_block_complete_cb_fn tx_completion_callback;
 	void* flush_ctx;
+	bool expecting_metadata;
+	size_t iq_bytes_collected;
+	uint8_t pending_iq_buffer[HACKRF_RX_IQ_BLOCK_BYTES];
+	size_t metadata_bytes_collected;
+	size_t metadata_target_length;
+	uint8_t metadata_buffer[HACKRF_RX_METADATA_MAX_LEN];
 };
+
+static void hackrf_reset_rx_state(hackrf_device* device)
+{
+	device->expecting_metadata = false;
+	device->iq_bytes_collected = 0;
+	device->metadata_bytes_collected = 0;
+	device->metadata_target_length = 0;
+}
+
+static void hackrf_deliver_rx_block(
+	hackrf_device* device,
+	size_t iq_length,
+	bool metadata_present)
+{
+	size_t metadata_len = metadata_present ? device->metadata_bytes_collected : 0;
+	if (metadata_present && metadata_len == 0)
+		metadata_len = device->metadata_target_length;
+	if (metadata_len > HACKRF_RX_METADATA_MAX_LEN)
+		metadata_len = HACKRF_RX_METADATA_MAX_LEN;
+
+	hackrf_transfer paired = {
+		.device = device,
+		.buffer = device->pending_iq_buffer,
+		.buffer_length = HACKRF_RX_IQ_BLOCK_BYTES,
+		.valid_length = (int) iq_length,
+		.rx_ctx = device->rx_ctx,
+		.tx_ctx = device->tx_ctx,
+		.metadata = metadata_present ? device->metadata_buffer : NULL,
+		.metadata_length = metadata_present ? metadata_len : 0};
+
+	int cb_result = device->callback ? device->callback(&paired) : 0;
+	if ((cb_result != 0) || (paired.valid_length <= 0)) {
+		device->streaming = false;
+	}
+
+	hackrf_reset_rx_state(device);
+}
+
+static void hackrf_process_rx_payload(
+	hackrf_device* device,
+	const uint8_t* data,
+	size_t length)
+{
+	while ((length > 0) && device->streaming) {
+		if (!device->expecting_metadata && (device->iq_bytes_collected == 0) &&
+		    (length >= sizeof(uint32_t))) {
+			uint32_t magic_word;
+			memcpy(&magic_word, data, sizeof(uint32_t));
+			if (FROM_LE32(magic_word) == HACKRF_RX_METADATA_MAGIC) {
+				device->expecting_metadata = true;
+				device->metadata_bytes_collected = 0;
+				device->metadata_target_length = 0;
+			}
+		}
+
+		if (!device->expecting_metadata) {
+			size_t need = HACKRF_RX_IQ_BLOCK_BYTES - device->iq_bytes_collected;
+			size_t copy_len = (length < need) ? length : need;
+			memcpy(device->pending_iq_buffer + device->iq_bytes_collected, data, copy_len);
+			device->iq_bytes_collected += copy_len;
+			data += copy_len;
+			length -= copy_len;
+			if (device->iq_bytes_collected == HACKRF_RX_IQ_BLOCK_BYTES) {
+				device->expecting_metadata = true;
+				device->metadata_bytes_collected = 0;
+				device->metadata_target_length = 0;
+			}
+			continue;
+		}
+
+		if (device->metadata_bytes_collected < sizeof(uint32_t)) {
+			size_t need = sizeof(uint32_t) - device->metadata_bytes_collected;
+			size_t copy_len = (length < need) ? length : need;
+			memcpy(device->metadata_buffer + device->metadata_bytes_collected, data, copy_len);
+			device->metadata_bytes_collected += copy_len;
+			data += copy_len;
+			length -= copy_len;
+			if (device->metadata_bytes_collected < sizeof(uint32_t))
+				continue;
+		}
+
+		uint32_t magic_word;
+		memcpy(&magic_word, device->metadata_buffer, sizeof(uint32_t));
+		if (FROM_LE32(magic_word) != HACKRF_RX_METADATA_MAGIC) {
+			/* Metadata missing: deliver IQ without metadata. */
+			size_t leftover = device->metadata_bytes_collected;
+			uint8_t metadata_spill[HACKRF_RX_METADATA_MAX_LEN];
+			if (leftover > 0) {
+				if (leftover > sizeof(metadata_spill))
+					leftover = sizeof(metadata_spill);
+				memcpy(metadata_spill, device->metadata_buffer, leftover);
+			}
+			hackrf_deliver_rx_block(device, HACKRF_RX_IQ_BLOCK_BYTES, false);
+			/* Treat the collected bytes as start of the next IQ block. */
+			device->iq_bytes_collected = leftover;
+			if (device->iq_bytes_collected > 0)
+				memcpy(device->pending_iq_buffer, metadata_spill, device->iq_bytes_collected);
+			device->expecting_metadata = false;
+			device->metadata_bytes_collected = 0;
+			device->metadata_target_length = 0;
+			continue;
+		}
+
+		if (device->metadata_target_length == 0) {
+			uint32_t event_count_le;
+			memcpy(&event_count_le, device->metadata_buffer + 8, sizeof(uint32_t));
+			size_t event_count = FROM_LE32(event_count_le);
+			if (event_count > HACKRF_RX_METADATA_MAX_EVENTS)
+				event_count = HACKRF_RX_METADATA_MAX_EVENTS;
+			size_t expected = HACKRF_RX_METADATA_MIN_BYTES +
+				(event_count * sizeof(hackrf_rx_metadata_event_t));
+			if (expected < HACKRF_RX_METADATA_MAX_LEN)
+				expected = HACKRF_RX_METADATA_MAX_LEN;
+			if (expected > HACKRF_RX_METADATA_MAX_LEN)
+				expected = HACKRF_RX_METADATA_MAX_LEN;
+			device->metadata_target_length = expected;
+		}
+
+		if (device->metadata_bytes_collected < device->metadata_target_length) {
+			size_t remaining = device->metadata_target_length - device->metadata_bytes_collected;
+			size_t copy_len = (length < remaining) ? length : remaining;
+			memcpy(device->metadata_buffer + device->metadata_bytes_collected, data, copy_len);
+			device->metadata_bytes_collected += copy_len;
+			data += copy_len;
+			length -= copy_len;
+		}
+
+		if ((device->metadata_target_length > 0) &&
+		    (device->metadata_bytes_collected >= device->metadata_target_length)) {
+			size_t iq_len = device->iq_bytes_collected;
+			hackrf_deliver_rx_block(device, iq_len, true);
+			continue;
+		}
+	}
+}
 
 typedef struct {
 	uint32_t bandwidth_hz;
@@ -1817,7 +1960,9 @@ hackrf_libusb_transfer_callback(struct libusb_transfer* usb_transfer)
 		.buffer_length = TRANSFER_BUFFER_SIZE,
 		.valid_length = usb_transfer->actual_length,
 		.rx_ctx = device->rx_ctx,
-		.tx_ctx = device->tx_ctx};
+		.tx_ctx = device->tx_ctx,
+		.metadata = NULL,
+		.metadata_length = 0};
 
 	success = usb_transfer->status == LIBUSB_TRANSFER_COMPLETED;
 
@@ -1829,6 +1974,43 @@ hackrf_libusb_transfer_callback(struct libusb_transfer* usb_transfer)
 	// transfer whilst cancel_transfers() is in the middle
 	// of stopping them.
 	pthread_mutex_lock(&device->transfer_lock);
+
+	bool handled_special = false;
+	if (success && (usb_transfer->endpoint == RX_ENDPOINT_ADDRESS)) {
+		hackrf_process_rx_payload(device, transfer.buffer, (size_t) transfer.valid_length);
+		if (device->streaming && device->transfers_setup) {
+			usb_transfer->length = TRANSFER_BUFFER_SIZE;
+			result = libusb_submit_transfer(usb_transfer);
+			if (result == LIBUSB_SUCCESS) {
+				resubmit = true;
+			} else {
+				device->streaming = false;
+				device->flush = false;
+			}
+		} else {
+			device->streaming = false;
+			device->flush = false;
+		}
+		handled_special = true;
+	}
+
+	if (handled_special) {
+		if (!resubmit) {
+			device->streaming = false;
+			device->flush = false;
+			if (device->active_transfers == 1) {
+				if (!device->flush) {
+					device->active_transfers = 0;
+					pthread_cond_broadcast(&device->all_finished_cv);
+				}
+			} else if (device->active_transfers > 0) {
+				device->active_transfers--;
+			}
+		}
+		pthread_mutex_unlock(&device->transfer_lock);
+		return;
+	}
+
 	if (success) {
 		if (device->streaming && (device->callback(&transfer) == 0) &&
 		    (transfer.valid_length > 0)) {
@@ -1920,6 +2102,12 @@ static int prepare_setup_transfers(
 {
 	if (device->transfers_setup == true) {
 		return HACKRF_ERROR_BUSY;
+	}
+
+	if (endpoint_address == RX_ENDPOINT_ADDRESS) {
+		hackrf_reset_rx_state(device);
+		memset(device->pending_iq_buffer, 0, sizeof(device->pending_iq_buffer));
+		memset(device->metadata_buffer, 0, sizeof(device->metadata_buffer));
 	}
 
 	device->callback = callback;
