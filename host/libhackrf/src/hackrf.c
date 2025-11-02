@@ -2169,6 +2169,13 @@ int ADDCALL hackrf_start_rx(
 	int result;
 	const uint8_t endpoint_address = RX_ENDPOINT_ADDRESS;
 	device->rx_ctx = rx_ctx;
+
+	// Clear any pending data that might remain on the USB endpoint.
+	result = libusb_clear_halt(device->usb_device, RX_ENDPOINT_ADDRESS);
+	if (result != LIBUSB_SUCCESS) {
+		last_libusb_error = result;
+		return HACKRF_ERROR_LIBUSB;
+	}
 	result = hackrf_set_transceiver_mode(device, HACKRF_TRANSCEIVER_MODE_RECEIVE);
 	if (result == HACKRF_SUCCESS) {
 		result = prepare_setup_transfers(device, endpoint_address, callback);
