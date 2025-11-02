@@ -162,11 +162,14 @@ def main():
         1: "SCT_COUNT",
     }
 
-    has_value = metadata[:,1] != 0
-    value = metadata[has_value,2]
-    print(value)
-    delta = np.diff(value)
-    print(delta)
+    # has_value = metadata[:,1] != 0
+    # value = metadata[has_value,2]
+    # print(value)
+    # delta = np.diff(value)
+    # print(delta)
+
+    delta = np.diff(metadata[:,1])
+    metadata[:,0] = np.hstack((0, delta))
 
     # plt.hist(delta)
     # plt.show()
@@ -179,17 +182,6 @@ def main():
     axes[-1].set_xlabel("Time (s)")
     fig.suptitle(f"Metadata words vs time ({args.iq_file.name})", y=0.99)
     fig.tight_layout(rect=[0, 0.03, 1, 0.95])
-
-    if args.print_delta and metadata.shape[0] > 1:
-        deltas = np.diff(metadata[:, 0], prepend=metadata[0, 0]) & 0xFFFFFFFF
-        unique_deltas = np.unique(deltas)
-        print(
-            "SCT_COUNT deltas (mod 2^32): min={}, max={}, sample={}".format(
-                deltas.min(),
-                deltas.max(),
-                unique_deltas[:8],
-            )
-        )
 
     if args.save:
         plt.savefig(args.save, dpi=150, bbox_inches="tight")
