@@ -57,8 +57,8 @@ static inline void fifo_push(sample_counter_event_t event)
 	uint8_t tail = fifo_tail;
 
 	if (fifo_is_full(head, tail)) {
-		tail = (tail + 1U) & SAMPLE_COUNTER_FIFO_MASK;
-		fifo_tail = tail;
+		// Drop newest event so the consumer remains sole writer of fifo_tail.
+		return;
 	}
 
 	fifo[head] = event;
@@ -137,14 +137,11 @@ size_t sample_counter_capture_drain(
 	}
 
 	size_t count = 0;
-
-	cm_disable_interrupts();
 	while ((count < max_events) && (fifo_tail != fifo_head)) {
 		dest[count] = fifo[fifo_tail];
 		fifo_tail = (fifo_tail + 1U) & SAMPLE_COUNTER_FIFO_MASK;
 		count++;
 	}
-	cm_enable_interrupts();
 
 	return count;
 }
