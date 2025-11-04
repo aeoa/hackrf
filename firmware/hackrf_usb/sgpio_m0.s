@@ -752,11 +752,11 @@ increment_sample_counter:
 	// Jump to next mode if threshold reached, or back to RX loop start.
 	// The following macro needed to be inlined and adapted to avoid branch out of range
 	// jump_next_mode rx                            // jump_next_mode()                     // 12
+	mov r2, #1                                      // r2 = 1                               // 1
 	ldr r0, [state, #THRESHOLD]                     // r0 = state.threshold                 // 2
 	cmp count, r0                                   // compare count to threshold           // 1
 	beq 1f                                          // if equal, change mode                // 1 thru, 3 taken
 	ldr r0, =rx_loop                                // otherwise branch back to rx_loop     // 2
-	mov r2, #1                                      // r2 = 1                               // 1
 	orr r0, r0, r2                                  // ensure Thumb bit                     // 1
 	bx r0                                           //                                      // 3
 1:
