@@ -141,27 +141,54 @@ size_t sample_counter_capture_drain(
 	return count;
 }
 
+static volatile uint32_t last_accepted_edge_timestamp = 0;
+static volatile bool last_edge_was_rising = false;
+
 void pin_int0_isr(void)
 {
 	uint32_t const timestamp = SCT_COUNT;
-	uint32_t const captured_rise = GPIO_PIN_INTERRUPT_RISE & SAMPLE_COUNTER_PININT_MASK;
-	uint32_t const captured_fall = GPIO_PIN_INTERRUPT_FALL & SAMPLE_COUNTER_PININT_MASK;
+	uint32_t time_since_last_accepted_edge = timestamp - last_accepted_edge_timestamp;
+	if (time_since_last_accepted_edge < 200u) {  // 10 µs @ 10 Ms/s
+		GPIO_PIN_INTERRUPT_RISE = SAMPLE_COUNTER_PININT_MASK;
+		GPIO_PIN_INTERRUPT_FALL = SAMPLE_COUNTER_PININT_MASK;
+		GPIO_PIN_INTERRUPT_IST = SAMPLE_COUNTER_PININT_MASK;
+		return;
+	}
+	last_accepted_edge_timestamp = timestamp;
 
-	if (captured_rise != 0U) {
-		sample_counter_event_t event = {
-			.timestamp = timestamp,
-			.edge = SAMPLE_COUNTER_EDGE_RISING,
-		};
-		fifo_push(event);
+	bool captured_rise = GPIO_PIN_INTERRUPT_RISE & SAMPLE_COUNTER_PININT_MASK;
+	bool captured_fall = GPIO_PIN_INTERRUPT_FALL & SAMPLE_COUNTER_PININT_MASK;
+	if (captured_rise && captured_fall) {
+		if (last_edge_was_rising) {
+			captured_rise = false;
+			GPIO_PIN_INTERRUPT_RISE = SAMPLE_COUNTER_PININT_MASK;
+		} else {
+			captured_fall = false;
+			GPIO_PIN_INTERRUPT_FALL = SAMPLE_COUNTER_PININT_MASK;
+		}
+	}
+
+	if (captured_rise) {
+		if (!last_edge_was_rising || time_since_last_accepted_edge > 20000u) {  // 1 ms @ 10 Ms/s
+			sample_counter_event_t event = {
+				.timestamp = timestamp,
+				.edge = SAMPLE_COUNTER_EDGE_RISING,
+			};
+			fifo_push(event);
+			last_edge_was_rising = true;
+		}
 		GPIO_PIN_INTERRUPT_RISE = SAMPLE_COUNTER_PININT_MASK;
 	}
 
-	if (captured_fall != 0U) {
-		sample_counter_event_t event = {
-			.timestamp = timestamp,
-			.edge = SAMPLE_COUNTER_EDGE_FALLING,
-		};
-		fifo_push(event);
+	if (captured_fall) {
+		if (last_edge_was_rising || time_since_last_accepted_edge > 20000u) {  // 1 ms @ 10 Ms/s
+			sample_counter_event_t event = {
+				.timestamp = timestamp,
+				.edge = SAMPLE_COUNTER_EDGE_FALLING,
+			};
+			fifo_push(event);
+			last_edge_was_rising = false;
+		}
 		GPIO_PIN_INTERRUPT_FALL = SAMPLE_COUNTER_PININT_MASK;
 	}
 
