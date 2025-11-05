@@ -65,11 +65,6 @@ static inline void fifo_push(sample_counter_event_t event)
 	fifo_head = (head + 1U) & SAMPLE_COUNTER_FIFO_MASK;
 }
 
-uint32_t sample_counter_read(void)
-{
-	return SCT_COUNT;
-}
-
 void sample_counter_capture_enable(void)
 {
 	if (fifo_enabled) {
@@ -148,14 +143,13 @@ size_t sample_counter_capture_drain(
 
 void pin_int0_isr(void)
 {
-	const uint32_t captured_rise =
-		GPIO_PIN_INTERRUPT_RISE & SAMPLE_COUNTER_PININT_MASK;
-	const uint32_t captured_fall =
-		GPIO_PIN_INTERRUPT_FALL & SAMPLE_COUNTER_PININT_MASK;
+	uint32_t const timestamp = SCT_COUNT;
+	uint32_t const captured_rise = GPIO_PIN_INTERRUPT_RISE & SAMPLE_COUNTER_PININT_MASK;
+	uint32_t const captured_fall = GPIO_PIN_INTERRUPT_FALL & SAMPLE_COUNTER_PININT_MASK;
 
 	if (captured_rise != 0U) {
 		sample_counter_event_t event = {
-			.timestamp = sample_counter_read(),
+			.timestamp = timestamp,
 			.edge = SAMPLE_COUNTER_EDGE_RISING,
 		};
 		fifo_push(event);
@@ -164,7 +158,7 @@ void pin_int0_isr(void)
 
 	if (captured_fall != 0U) {
 		sample_counter_event_t event = {
-			.timestamp = sample_counter_read(),
+			.timestamp = timestamp,
 			.edge = SAMPLE_COUNTER_EDGE_FALLING,
 		};
 		fifo_push(event);
