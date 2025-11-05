@@ -15,12 +15,18 @@ typedef enum {
 	SAMPLE_COUNTER_EDGE_RISING = 2,
 } sample_counter_edge_t;
 
+typedef enum {
+	SAMPLE_COUNTER_SOURCE_FALLBACK = (1U << 0),
+	SAMPLE_COUNTER_SOURCE_CAPTURE = (1U << 1),
+	SAMPLE_COUNTER_SOURCE_AIN = (1U << 2),
+	SAMPLE_COUNTER_SOURCE_SIN = (1U << 3),
+} sample_counter_source_flags_t;
+
 typedef struct sample_counter_event {
 	uint32_t timestamp;
 	uint32_t edge;
+	uint32_t source;
 } sample_counter_event_t;
-
-uint32_t sample_counter_read(void);
 
 void sample_counter_capture_enable(void);
 void sample_counter_capture_disable(void);
