@@ -9,6 +9,10 @@
 #include <libopencm3/cm3/nvic.h>
 #include <libopencm3/lpc43xx/memorymap.h>
 #include <libopencm3/lpc43xx/scu.h>
+#include <libopencm3/lpc43xx/gima.h>
+#include <libopencm3/lpc43xx/ccu.h>
+#include <libopencm3/lpc43xx/timer.h>
+#include <libopencm3/lpc43xx/m4/nvic.h>
 
 #include "sct.h"
 
@@ -30,6 +34,16 @@
 
 #define SAMPLE_COUNTER_GPIO_PORT 5U
 #define SAMPLE_COUNTER_GPIO_PIN 14U
+#define SAMPLE_COUNTER_SCT_INPUT 2U
+#define SAMPLE_COUNTER_SCT_EVENT_RISE 14U
+#define SAMPLE_COUNTER_SCT_EVENT_FALL 15U
+#define SAMPLE_COUNTER_SCT_CAP_RISE 14U
+#define SAMPLE_COUNTER_SCT_CAP_FALL 15U
+#define SAMPLE_COUNTER_GIMA_SELECT_PIN 0x5U
+
+#define SAMPLE_COUNTER_REF_TIMER TIMER3
+#define SAMPLE_COUNTER_GIMA_TIMER_IN GIMA_CAP3_0_IN
+#define SAMPLE_COUNTER_TIMER_IR_MASK TIMER_IR_CR0INT
 
 static struct sample_counter_event fifo[SAMPLE_COUNTER_FIFO_DEPTH];
 static volatile uint8_t fifo_head;
@@ -39,12 +53,6 @@ static volatile bool fifo_enabled;
 static const struct gpio_t slow_time_gpio = GPIO(
 	SAMPLE_COUNTER_GPIO_PORT,
 	SAMPLE_COUNTER_GPIO_PIN);
-
-static inline void fifo_reset(void)
-{
-	fifo_head = 0;
-	fifo_tail = 0;
-}
 
 static inline bool fifo_is_full(uint8_t head, uint8_t tail)
 {
@@ -65,11 +73,64 @@ static inline void fifo_push(sample_counter_event_t event)
 	fifo_head = (head + 1U) & SAMPLE_COUNTER_FIFO_MASK;
 }
 
+static inline void fifo_reset(void)
+{
+	fifo_head = 0;
+	fifo_tail = 0;
+}
+
 void sample_counter_capture_enable(void)
 {
 	if (fifo_enabled) {
 		return;
 	}
+
+	// Enable Timer3 clock for independent capture.
+	CCU1_CLK_M4_TIMER3_CFG |= 0x1U;
+
+	// Route PPS input (SGPIO15 -> CTIN_2) into SCT input 2 so hardware can latch edges.
+	// Enable GIMA synchronizer to avoid occasional metastability jitter.
+	GIMA_CTIN_2_IN = (SAMPLE_COUNTER_GIMA_SELECT_PIN << 4) | (1U << 2);
+	// Also feed the same pin into Timer3 CAP3_0 for independent capture.
+	SAMPLE_COUNTER_GIMA_TIMER_IN =
+		(SAMPLE_COUNTER_GIMA_SELECT_PIN << 4) | (1U << 2);
+
+	// Turn match registers 14/15 into capture registers and latch on events.
+	SCT_REGMODE |= (1U << SAMPLE_COUNTER_SCT_CAP_RISE) |
+		(1U << SAMPLE_COUNTER_SCT_CAP_FALL);
+
+	MMIO32(SCT_BASE + 0x200 + (SAMPLE_COUNTER_SCT_CAP_RISE * 4U)) =
+		(1U << SAMPLE_COUNTER_SCT_EVENT_RISE);
+	MMIO32(SCT_BASE + 0x200 + (SAMPLE_COUNTER_SCT_CAP_FALL * 4U)) =
+		(1U << SAMPLE_COUNTER_SCT_EVENT_FALL);
+
+	// Events fire in all states on PPS input rising/falling.
+	SCT_EVn_STATE(SAMPLE_COUNTER_SCT_EVENT_RISE) = 0xFFFFFFFF;
+	SCT_EVn_STATE(SAMPLE_COUNTER_SCT_EVENT_FALL) = 0xFFFFFFFF;
+	SCT_EVn_CTRL(SAMPLE_COUNTER_SCT_EVENT_RISE) =
+		SCT_EVn_CTRL_OUTSEL_INPUT |
+		SCT_EVn_CTRL_IOSEL(SAMPLE_COUNTER_SCT_INPUT) |
+		SCT_EVn_CTRL_IOCOND_RISE |
+		SCT_EVn_CTRL_COMBMODE_IO;
+	SCT_EVn_CTRL(SAMPLE_COUNTER_SCT_EVENT_FALL) =
+		SCT_EVn_CTRL_OUTSEL_INPUT |
+		SCT_EVn_CTRL_IOSEL(SAMPLE_COUNTER_SCT_INPUT) |
+		SCT_EVn_CTRL_IOCOND_FALL |
+		SCT_EVn_CTRL_COMBMODE_IO;
+
+	// Clear any stale event flags before we start listening.
+	SCT_EVFLAG = (1U << SAMPLE_COUNTER_SCT_EVENT_RISE) |
+		(1U << SAMPLE_COUNTER_SCT_EVENT_FALL);
+
+	// Configure Timer3 as free-running capture on both edges.
+	TIMER_TCR(SAMPLE_COUNTER_REF_TIMER) = TIMER_TCR_CRST;
+	TIMER_CTCR(SAMPLE_COUNTER_REF_TIMER) = TIMER_CTCR_MODE_TIMER;
+	TIMER_PR(SAMPLE_COUNTER_REF_TIMER) = 0;
+	TIMER_PC(SAMPLE_COUNTER_REF_TIMER) = 0;
+	TIMER_IR(SAMPLE_COUNTER_REF_TIMER) = 0xFFFFFFFFU;
+	TIMER_CCR(SAMPLE_COUNTER_REF_TIMER) =
+		TIMER_CCR_CAP0RE | TIMER_CCR_CAP0FE;
+	TIMER_TCR(SAMPLE_COUNTER_REF_TIMER) = TIMER_TCR_CEN;
 
 	cm_disable_interrupts();
 	fifo_reset();
@@ -111,11 +172,26 @@ void sample_counter_capture_disable(void)
 		return;
 	}
 
-	nvic_disable_irq(NVIC_PIN_INT0_IRQ);
+	// Clear capture routing to avoid impacting other SCT uses when disabled.
+	SCT_EVn_STATE(SAMPLE_COUNTER_SCT_EVENT_RISE) = 0;
+	SCT_EVn_STATE(SAMPLE_COUNTER_SCT_EVENT_FALL) = 0;
+	SCT_EVn_CTRL(SAMPLE_COUNTER_SCT_EVENT_RISE) = 0;
+	SCT_EVn_CTRL(SAMPLE_COUNTER_SCT_EVENT_FALL) = 0;
+	MMIO32(SCT_BASE + 0x200 + (SAMPLE_COUNTER_SCT_CAP_RISE * 4U)) = 0;
+	MMIO32(SCT_BASE + 0x200 + (SAMPLE_COUNTER_SCT_CAP_FALL * 4U)) = 0;
+	SCT_REGMODE &=
+		~((1U << SAMPLE_COUNTER_SCT_CAP_RISE) |
+		  (1U << SAMPLE_COUNTER_SCT_CAP_FALL));
+	SCT_EVFLAG = (1U << SAMPLE_COUNTER_SCT_EVENT_RISE) |
+		(1U << SAMPLE_COUNTER_SCT_EVENT_FALL);
 
-	GPIO_PIN_INTERRUPT_CIENR = SAMPLE_COUNTER_PININT_MASK;
-	GPIO_PIN_INTERRUPT_CIENF = SAMPLE_COUNTER_PININT_MASK;
-	GPIO_PIN_INTERRUPT_IST = SAMPLE_COUNTER_PININT_MASK;
+	// Stop independent timer capture.
+	TIMER_TCR(SAMPLE_COUNTER_REF_TIMER) = 0;
+	TIMER_CCR(SAMPLE_COUNTER_REF_TIMER) = 0;
+	TIMER_IR(SAMPLE_COUNTER_REF_TIMER) = 0xFFFFFFFFU;
+	CCU1_CLK_M4_TIMER3_CFG &= ~0x1U;
+
+	nvic_disable_irq(NVIC_PIN_INT0_IRQ);
 
 	cm_disable_interrupts();
 	fifo_reset();
@@ -146,15 +222,22 @@ static volatile bool last_edge_was_rising = false;
 
 void pin_int0_isr(void)
 {
-	uint32_t const timestamp = SCT_COUNT;
-	uint32_t time_since_last_accepted_edge = timestamp - last_accepted_edge_timestamp;
+	uint32_t const irq_timestamp = SCT_COUNT;
+	uint32_t const evflags = SCT_EVFLAG;
+	uint32_t hw_timestamp = irq_timestamp;
+	uint32_t ref_timestamp = TIMER_TC(SAMPLE_COUNTER_REF_TIMER);
+	if (TIMER_IR(SAMPLE_COUNTER_REF_TIMER) & SAMPLE_COUNTER_TIMER_IR_MASK) {
+		ref_timestamp = TIMER_CR0(SAMPLE_COUNTER_REF_TIMER);
+		TIMER_IR(SAMPLE_COUNTER_REF_TIMER) = SAMPLE_COUNTER_TIMER_IR_MASK;
+	}
+	uint32_t time_since_last_accepted_edge = irq_timestamp - last_accepted_edge_timestamp;
 	if (time_since_last_accepted_edge < 200u) {  // 10 µs @ 10 Ms/s
 		GPIO_PIN_INTERRUPT_RISE = SAMPLE_COUNTER_PININT_MASK;
 		GPIO_PIN_INTERRUPT_FALL = SAMPLE_COUNTER_PININT_MASK;
 		GPIO_PIN_INTERRUPT_IST = SAMPLE_COUNTER_PININT_MASK;
 		return;
 	}
-	last_accepted_edge_timestamp = timestamp;
+	last_accepted_edge_timestamp = irq_timestamp;
 
 	bool captured_rise = GPIO_PIN_INTERRUPT_RISE & SAMPLE_COUNTER_PININT_MASK;
 	bool captured_fall = GPIO_PIN_INTERRUPT_FALL & SAMPLE_COUNTER_PININT_MASK;
@@ -169,10 +252,18 @@ void pin_int0_isr(void)
 	}
 
 	if (captured_rise) {
+		if (evflags & (1U << SAMPLE_COUNTER_SCT_EVENT_RISE)) {
+			hw_timestamp = MMIO32(
+				SCT_BASE + 0x100 + (SAMPLE_COUNTER_SCT_CAP_RISE * 4U));
+			SCT_EVFLAG = (1U << SAMPLE_COUNTER_SCT_EVENT_RISE);
+		}
 		if (!last_edge_was_rising || time_since_last_accepted_edge > 20000u) {  // 1 ms @ 10 Ms/s
 			sample_counter_event_t event = {
-				.timestamp = timestamp,
+				.timestamp = hw_timestamp,
 				.edge = SAMPLE_COUNTER_EDGE_RISING,
+				.irq_timestamp = irq_timestamp,
+				.source_flags = (hw_timestamp != irq_timestamp) ? 1U : 0U,
+				.ref_timestamp = ref_timestamp,
 			};
 			fifo_push(event);
 			last_edge_was_rising = true;
@@ -181,10 +272,19 @@ void pin_int0_isr(void)
 	}
 
 	if (captured_fall) {
+		hw_timestamp = irq_timestamp;
+		if (evflags & (1U << SAMPLE_COUNTER_SCT_EVENT_FALL)) {
+			hw_timestamp = MMIO32(
+				SCT_BASE + 0x100 + (SAMPLE_COUNTER_SCT_CAP_FALL * 4U));
+			SCT_EVFLAG = (1U << SAMPLE_COUNTER_SCT_EVENT_FALL);
+		}
 		if (last_edge_was_rising || time_since_last_accepted_edge > 20000u) {  // 1 ms @ 10 Ms/s
 			sample_counter_event_t event = {
-				.timestamp = timestamp,
+				.timestamp = hw_timestamp,
 				.edge = SAMPLE_COUNTER_EDGE_FALLING,
+				.irq_timestamp = irq_timestamp,
+				.source_flags = (hw_timestamp != irq_timestamp) ? 1U : 0U,
+				.ref_timestamp = ref_timestamp,
 			};
 			fifo_push(event);
 			last_edge_was_rising = false;

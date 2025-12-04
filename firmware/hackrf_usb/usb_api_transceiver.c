@@ -53,8 +53,12 @@
 #define USB_TRANSFER_SHIFT 14U
 #define USB_SAMPLES_PER_TRANSFER (USB_TRANSFER_SIZE / 2U)
 #define SAMPLE_COUNTER_HEADER_MAX_EVENTS 8U
-#define SAMPLE_HEADER_WORDS \
-	(4U + (SAMPLE_COUNTER_HEADER_MAX_EVENTS * 2U))
+#define SAMPLE_HEADER_IRQ_OFFSET 20U
+#define SAMPLE_HEADER_SOURCE_OFFSET \
+	(SAMPLE_HEADER_IRQ_OFFSET + SAMPLE_COUNTER_HEADER_MAX_EVENTS)
+#define SAMPLE_HEADER_REF_OFFSET \
+	(SAMPLE_HEADER_SOURCE_OFFSET + SAMPLE_COUNTER_HEADER_MAX_EVENTS)
+#define SAMPLE_HEADER_WORDS (44U)
 #define SAMPLE_HEADER_MAGIC 0xDEADBEEF
 
 typedef struct {
@@ -487,9 +491,23 @@ void rx_mode(uint32_t seq)
 
 					header[0] = SAMPLE_HEADER_MAGIC;
 					header[1] = first_sample;
-					header[2] = sample_counter_capture_drain(
-						(struct sample_counter_event*)&header[3],
+
+					sample_counter_event_t events[SAMPLE_COUNTER_HEADER_MAX_EVENTS];
+					uint32_t const event_count = sample_counter_capture_drain(
+						events,
 						SAMPLE_COUNTER_HEADER_MAX_EVENTS);
+					header[2] = event_count;
+
+					for (uint32_t i = 0; i < event_count; i++) {
+						header[3 + (i * 2U)] = events[i].timestamp;
+						header[4 + (i * 2U)] = events[i].edge;
+						// Store legacy IRQ-based timestamp for comparison/debug.
+						header[SAMPLE_HEADER_IRQ_OFFSET + i] = events[i].irq_timestamp;
+						header[SAMPLE_HEADER_SOURCE_OFFSET + i] =
+							events[i].source_flags;
+						header[SAMPLE_HEADER_REF_OFFSET + i] =
+							events[i].ref_timestamp;
+					}
 
 					usb_transfer_schedule_block(
 						&usb_endpoint_bulk_in,
