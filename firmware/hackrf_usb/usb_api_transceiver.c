@@ -52,10 +52,19 @@
 #define USB_TRANSFER_SIZE 0x4000
 #define USB_TRANSFER_SHIFT 14U
 #define USB_SAMPLES_PER_TRANSFER (USB_TRANSFER_SIZE / 2U)
-#define SAMPLE_COUNTER_HEADER_MAX_EVENTS 8U
-#define SAMPLE_HEADER_WORDS \
-	(4U + (SAMPLE_COUNTER_HEADER_MAX_EVENTS * 2U))
+#define SAMPLE_HEADER_SIZE 512U
+#define SAMPLE_COUNTER_HEADER_MAX_EVENTS 61U
+#define SAMPLE_COUNTER_HEADER_DROPPED_EVENT_WORD \
+	(3U + (SAMPLE_COUNTER_HEADER_MAX_EVENTS * 2U))
+#define SAMPLE_COUNTER_HEADER_HIGH_WATER_WORD \
+	(SAMPLE_COUNTER_HEADER_DROPPED_EVENT_WORD + 1U)
+#define SAMPLE_COUNTER_HEADER_CAPACITY_WORD \
+	(SAMPLE_COUNTER_HEADER_HIGH_WATER_WORD + 1U)
+#define SAMPLE_HEADER_WORDS (SAMPLE_COUNTER_HEADER_CAPACITY_WORD + 1U)
 #define SAMPLE_HEADER_MAGIC 0xDEADBEEF
+
+typedef char sample_header_must_fit[
+	(SAMPLE_HEADER_WORDS <= (SAMPLE_HEADER_SIZE / sizeof(uint32_t))) ? 1 : -1];
 
 typedef struct {
 	uint32_t freq_mhz;
@@ -481,7 +490,7 @@ void rx_mode(uint32_t seq)
 
 			case RX_TRANSFER_HEADER: {
 				if (start_header_transfer) {
-					int header_size = 512;
+					int header_size = SAMPLE_HEADER_SIZE;
 					memset(addr, 0, header_size);
 					uint32_t* header = (uint32_t*)addr;
 
@@ -490,6 +499,12 @@ void rx_mode(uint32_t seq)
 					header[2] = sample_counter_capture_drain(
 						(struct sample_counter_event*)&header[3],
 						SAMPLE_COUNTER_HEADER_MAX_EVENTS);
+					header[SAMPLE_COUNTER_HEADER_DROPPED_EVENT_WORD] =
+						sample_counter_capture_dropped();
+					header[SAMPLE_COUNTER_HEADER_HIGH_WATER_WORD] =
+						sample_counter_capture_high_water();
+					header[SAMPLE_COUNTER_HEADER_CAPACITY_WORD] =
+						sample_counter_capture_capacity();
 
 					usb_transfer_schedule_block(
 						&usb_endpoint_bulk_in,
