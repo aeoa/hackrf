@@ -858,13 +858,11 @@ enum sweep_style {
 typedef struct hackrf_device hackrf_device;
 
 #define HACKRF_RX_METADATA_MAGIC 0xDEADBEEF
-#define HACKRF_RX_METADATA_MAX_EVENTS 8U
+#define HACKRF_RX_METADATA_MAX_EVENTS 96U
 #define HACKRF_RX_METADATA_MAX_LEN 512U
+#define HACKRF_RX_METADATA_GROUP_BLOCKS 16U
 
-typedef struct {
-	uint32_t timestamp;
-	uint32_t edge;
-} hackrf_rx_metadata_event_t;
+typedef uint32_t hackrf_rx_metadata_event_t;
 
 /**
  * USB transfer information passed to RX or TX callback.

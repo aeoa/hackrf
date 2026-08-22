@@ -27,13 +27,16 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#define USB_SAMP_BUFFER_SIZE 0x8000
+#define USB_SAMP_BUFFER_MASK 0x7FFF
+
 #define USB_BULK_BUFFER_SIZE 0x8000
 #define USB_BULK_BUFFER_MASK 0x7FFF
 
-/* Address of usb_bulk_buffer is set in ldscripts. If you change the name of this
- * variable, it won't be where it needs to be in the processor's address space,
- * unless you also adjust the ldscripts.
+/* Addresses are set in linker scripts. The M0 writes usb_samp_buffer; GPDMA
+ * moves complete chunks into usb_bulk_buffer for the USB controller.
  */
+extern uint8_t usb_samp_buffer[USB_SAMP_BUFFER_SIZE];
 extern uint8_t usb_bulk_buffer[USB_BULK_BUFFER_SIZE];
 
 #endif /*__USB_BULK_BUFFER_H__*/

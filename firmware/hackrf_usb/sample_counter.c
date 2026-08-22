@@ -176,8 +176,8 @@ void sample_counter_capture_disable(void)
 	cm_enable_interrupts();
 }
 
-size_t sample_counter_capture_drain(
-	sample_counter_event_t* dest,
+size_t sample_counter_capture_drain_packed(
+	uint32_t* dest,
 	size_t max_events)
 {
 	if ((dest == NULL) || (max_events == 0U)) {
@@ -186,7 +186,11 @@ size_t sample_counter_capture_drain(
 
 	size_t count = 0;
 	while ((count < max_events) && (fifo_tail != fifo_head)) {
-		dest[count] = fifo[fifo_tail];
+		sample_counter_event_t const event = fifo[fifo_tail];
+		dest[count] =
+			(event.timestamp & 0x3fffffffU) |
+			((uint32_t)(event.source & 0x1U) << 30U) |
+			((uint32_t)(event.edge == SAMPLE_COUNTER_EDGE_RISING) << 31U);
 		fifo_tail = (fifo_tail + 1U) & SAMPLE_COUNTER_FIFO_MASK;
 		count++;
 	}

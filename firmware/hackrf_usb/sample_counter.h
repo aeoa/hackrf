@@ -29,8 +29,13 @@ uint32_t sample_counter_read(void);
 
 void sample_counter_capture_enable(void);
 void sample_counter_capture_disable(void);
-size_t sample_counter_capture_drain(
-	sample_counter_event_t* dest,
+/*
+ * Pack each event into one word: timestamp[29:0], source, rising-edge flag.
+ * The receiver reconstructs the two omitted timestamp bits relative to the
+ * IQ block index carried in the same metadata group.
+ */
+size_t sample_counter_capture_drain_packed(
+	uint32_t* dest,
 	size_t max_events);
 uint32_t sample_counter_capture_dropped(void);
 uint32_t sample_counter_capture_high_water(void);

@@ -259,6 +259,7 @@ buf_base          .req r12
 buf_mask          .req r11
 shortfall_length  .req r10
 hi_zero           .req r9
+dropped_samples   .req r8
 sgpio_data        .req r7
 sgpio_int         .req r6
 count             .req r5
@@ -309,13 +310,8 @@ buf_ptr           .req r4
 	flag .req r2
 	ldr mode, [state, #REQUESTED_MODE]              // mode = state.requested_mode          // 2
 	lsr flag, mode, #16                             // flag = mode >> 16                    // 1
-	// The following needed to be adapted to avoid branch out of range error
-	// bne \label                                   // if flag != 0: goto label             // 1 thru, 3 taken
-	beq 1f                                          // if flag == 0: skip branch            // 1 thru, 3 taken
-	ldr r0, =\label                                 // r0 = &label                          // 2
-	mov r1, #1                                      // r1 = 1                               // 1
-	orr r0, r0, r1                                  // ensure Thumb state bit set           // 1
-	bx r0                                           // branch to label                      // 3
+	beq 1f                                          // if flag == 0: continue               // 1 thru, 3 taken
+	b \label                                        // otherwise handle request             // 3
 1:
 .endm
 
@@ -495,6 +491,7 @@ main:                                                                           
 	zero .req r0
 	mov zero, #0                                    // zero = 0                             // 1
 	mov hi_zero, zero                               // hi_zero = zero                       // 1
+	mov dropped_samples, zero                       // dropped_samples = zero               // 1
 
 	// Initialise state.
 	str zero, [state, #REQUESTED_MODE]              // state.requested_mode = zero          // 2
@@ -549,6 +546,7 @@ idle:
 	str zero, [state, #RX_BLOCK0_SAMPLE]            // block0 sample index = zero           // 2
 	str zero, [state, #RX_BLOCK1_SAMPLE]            // block1 sample index = zero           // 2
 	mov shortfall_length, zero                      // shortfall_length = zero              // 1
+	mov dropped_samples, zero                       // dropped_samples = zero               // 1
 	mov count, zero                                 // count = zero                         // 1
 
 ack_request:
@@ -719,22 +717,14 @@ rx_loop:
 	// Update buffer pointer.
 	update_buf_ptr                                  // update_buf_ptr()                     // 3
 
-	// If this is the first chunk in a USB transfer block, record its sample index.
-	ldr r2, [state, #SAMPLE_COUNTER]                // r2 = sample counter                  // 2
+	// Branch to out-of-line bookkeeping at the start of each 16 KiB block.
+	// Keeping the uncommon code outside this loop preserves short direct branches.
 	mov r0, count                                   // r0 = count                           // 1
 	lsl r0, r0, #18                                 // shift low bits, capture block bit    // 1
-	bne increment_sample_counter                    // not start of block                   // 1 thru, 3 taken
-	bcs write_block1_sample                         // carry set => block 1                 // 1 thru, 3 taken
-write_block0_sample:
-	str r2, [state, #RX_BLOCK0_SAMPLE]              // block0 sample index                  // 2
-	b increment_sample_counter                      //                                      // 3
-write_block1_sample:
-	str r2, [state, #RX_BLOCK1_SAMPLE]              // block1 sample index                  // 2
-increment_sample_counter:
-	add r2, #16                                     // r2 += 16                             // 1
-	str r2, [state, #SAMPLE_COUNTER]                // store updated counter                // 2
+	beq rx_record_block_sample                      // start of block                       // 1 thru, 3 taken
 
 	// Read data from SGPIO.
+read_rx_data:
 	ldr r0, [sgpio_data, #SLICE0]                   // r0 = SGPIO_REG_SS[SLICE0]            // 10
 	ldr r1, [sgpio_data, #SLICE1]                   // r1 = SGPIO_REG_SS[SLICE1]            // 10
 	ldr r2, [sgpio_data, #SLICE2]                   // r2 = SGPIO_REG_SS[SLICE2]            // 10
@@ -750,44 +740,33 @@ increment_sample_counter:
 	update_counts                                   // update_counts()                      // 4
 
 	// Jump to next mode if threshold reached, or back to RX loop start.
-	// The following macro needed to be inlined and adapted to avoid branch out of range
-	// jump_next_mode rx                            // jump_next_mode()                     // 12
-	mov r2, #1                                      // r2 = 1                               // 1
-	ldr r0, [state, #THRESHOLD]                     // r0 = state.threshold                 // 2
-	cmp count, r0                                   // compare count to threshold           // 1
-	beq 1f                                          // if equal, change mode                // 1 thru, 3 taken
-	ldr r0, =rx_loop                                // otherwise branch back to rx_loop     // 2
-	orr r0, r0, r2                                  // ensure Thumb bit                     // 1
-	bx r0                                           //                                      // 3
-1:
-	ldr r1, [state, #NEXT_MODE]                     // r1 = state.next_mode                 // 2
-	str r1, [state, #ACTIVE_MODE]                   // state.active_mode = r1               // 2
-	cmp r1, #MODE_RX                                // if next mode is RX:                  // 1
-	beq 2f                                          //     loop back to rx_loop             // 1 thru, 3 taken
-	bhi 3f                                          // if > RX: goto tx_loop handler        // 1 thru, 3 taken
-	cmp r1, #MODE_WAIT                              // if == WAIT:                          // 1
-	beq wait_loop                                   //     goto wait_loop                   // 1 thru, 3 taken
-	ldr r0, =idle                                   // else goto idle                       // 2
-	orr r0, r0, r2                                  // ensure Thumb bit                     // 1
-	bx r0                                           //                                      // 3
-2:
-	ldr r0, =rx_loop                                // stay in RX                           // 2
-	orr r0, r0, r2                                  // ensure Thumb bit                     // 1
-	bx r0                                           //                                      // 3
-3:
-	ldr r0, =tx_loop                                // branch to tx_loop                    // 2
-	orr r0, r0, r2                                  // ensure Thumb bit                     // 1
-	bx r0                                           //                                      // 3
+	jump_next_mode rx                               // jump_next_mode()                     // 12
 
 rx_shortfall:
 
-	// Advance sample counter even though data is dropped.
-	ldr r0, [state, #SAMPLE_COUNTER]               // r0 = sample counter                   // 2
-	add r0, #16                                    // r0 += 16                              // 1
-	str r0, [state, #SAMPLE_COUNTER]               // store updated counter                 // 2
+	// The successful byte count is stationary, so track dropped samples only.
+	mov r0, #16                                    // one SGPIO service interval             // 1
+	add dropped_samples, r0                        // advance absolute sample position       // 1
 
 	// Run common shortfall handling and jump back to RX loop.
 	handle_shortfall rx                             // handle_shortfall()                   // 24
+
+rx_record_block_sample:
+	// The successful component is count / 2. Keep only dropped samples in a
+	// register so the hot loop does not load and store shared SRAM every time.
+	bcs rx_record_block1_sample                     // carry set => block 1                 // 1 thru, 3 taken
+	mov r2, count                                   // r2 = successful byte count           // 1
+	lsr r2, r2, #1                                  // r2 = successful sample count         // 1
+	add r2, dropped_samples                         // include samples lost in shortfalls   // 1
+	str r2, [state, #RX_BLOCK0_SAMPLE]              // block0 sample index                  // 2
+	b read_rx_data                                  //                                      // 3
+
+rx_record_block1_sample:
+	mov r2, count                                   // r2 = successful byte count           // 1
+	lsr r2, r2, #1                                  // r2 = successful sample count         // 1
+	add r2, dropped_samples                         // include samples lost in shortfalls   // 1
+	str r2, [state, #RX_BLOCK1_SAMPLE]              // block1 sample index                  // 2
+	b read_rx_data                                  //                                      // 3
 
 // The linker will put a literal pool here, so add a label for clearer objdump output:
 constants:

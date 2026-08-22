@@ -131,7 +131,17 @@ typedef enum {
 #define DEVICE_BUFFER_SIZE    32768
 #define USB_MAX_SERIAL_LENGTH 32
 #define HACKRF_RX_IQ_BLOCK_BYTES 0x4000
-#define HACKRF_RX_METADATA_MIN_BYTES (3U * sizeof(uint32_t))
+#define HACKRF_RX_IQ_GROUP_BYTES \
+	(HACKRF_RX_IQ_BLOCK_BYTES * HACKRF_RX_METADATA_GROUP_BLOCKS)
+#define HACKRF_RX_METADATA_GROUP_MAGIC 0x47525010U
+#define HACKRF_RX_METADATA_DROPPED_WORD \
+	(3U + HACKRF_RX_METADATA_MAX_EVENTS)
+#define HACKRF_RX_METADATA_GROUP_MAGIC_WORD \
+	(HACKRF_RX_METADATA_DROPPED_WORD + 3U)
+#define HACKRF_RX_METADATA_GROUP_COUNT_WORD \
+	(HACKRF_RX_METADATA_GROUP_MAGIC_WORD + 1U)
+#define HACKRF_RX_METADATA_GROUP_FIRST_SAMPLE_WORD \
+	(HACKRF_RX_METADATA_GROUP_COUNT_WORD + 1U)
 
 struct hackrf_device {
 	libusb_device_handle* usb_device;
@@ -156,7 +166,7 @@ struct hackrf_device {
 	void* flush_ctx;
 	bool expecting_metadata;
 	size_t iq_bytes_collected;
-	uint8_t pending_iq_buffer[HACKRF_RX_IQ_BLOCK_BYTES];
+	uint8_t pending_iq_buffer[HACKRF_RX_IQ_GROUP_BYTES];
 	size_t metadata_bytes_collected;
 	size_t metadata_target_length;
 	uint8_t metadata_buffer[HACKRF_RX_METADATA_MAX_LEN];
@@ -170,30 +180,58 @@ static void hackrf_reset_rx_state(hackrf_device* device)
 	device->metadata_target_length = 0;
 }
 
-static void hackrf_deliver_rx_block(
-	hackrf_device* device,
-	size_t iq_length,
-	bool metadata_present)
+static void hackrf_deliver_rx_group(hackrf_device* device)
 {
-	size_t metadata_len = metadata_present ? device->metadata_bytes_collected : 0;
-	if (metadata_present && metadata_len == 0)
-		metadata_len = device->metadata_target_length;
-	if (metadata_len > HACKRF_RX_METADATA_MAX_LEN)
-		metadata_len = HACKRF_RX_METADATA_MAX_LEN;
-
-	hackrf_transfer paired = {
-		.device = device,
-		.buffer = device->pending_iq_buffer,
-		.buffer_length = HACKRF_RX_IQ_BLOCK_BYTES,
-		.valid_length = (int) iq_length,
-		.rx_ctx = device->rx_ctx,
-		.tx_ctx = device->tx_ctx,
-		.metadata = metadata_present ? device->metadata_buffer : NULL,
-		.metadata_length = metadata_present ? metadata_len : 0};
-
-	int cb_result = device->callback ? device->callback(&paired) : 0;
-	if ((cb_result != 0) || (paired.valid_length <= 0)) {
+	uint32_t group_magic_le;
+	uint32_t group_count_le;
+	uint32_t event_count_le;
+	size_t block;
+	memcpy(&group_magic_le,
+	       device->metadata_buffer + HACKRF_RX_METADATA_GROUP_MAGIC_WORD * 4U,
+	       sizeof(group_magic_le));
+	memcpy(&group_count_le,
+	       device->metadata_buffer + HACKRF_RX_METADATA_GROUP_COUNT_WORD * 4U,
+	       sizeof(group_count_le));
+	if ((FROM_LE32(group_magic_le) != HACKRF_RX_METADATA_GROUP_MAGIC) ||
+	    (FROM_LE32(group_count_le) != HACKRF_RX_METADATA_GROUP_BLOCKS)) {
 		device->streaming = false;
+		hackrf_reset_rx_state(device);
+		return;
+	}
+
+	memcpy(&event_count_le, device->metadata_buffer + 8U, sizeof(event_count_le));
+	for (block = 0;
+	     block < HACKRF_RX_METADATA_GROUP_BLOCKS && device->streaming;
+	     ++block) {
+		uint32_t first_sample_le;
+		/* Each entry came from the M0 latch for this exact IQ block. */
+		memcpy(
+			&first_sample_le,
+			device->metadata_buffer +
+				(HACKRF_RX_METADATA_GROUP_FIRST_SAMPLE_WORD + block) * 4U,
+			sizeof(first_sample_le));
+		memcpy(device->metadata_buffer + 4U,
+		       &first_sample_le,
+		       sizeof(first_sample_le));
+		uint32_t callback_event_count_le =
+			(block + 1U == HACKRF_RX_METADATA_GROUP_BLOCKS) ?
+				event_count_le : TO_LE(0U);
+		memcpy(device->metadata_buffer + 8U,
+		       &callback_event_count_le,
+		       sizeof(callback_event_count_le));
+
+		hackrf_transfer paired = {
+			.device = device,
+			.buffer = device->pending_iq_buffer + block * HACKRF_RX_IQ_BLOCK_BYTES,
+			.buffer_length = HACKRF_RX_IQ_BLOCK_BYTES,
+			.valid_length = HACKRF_RX_IQ_BLOCK_BYTES,
+			.rx_ctx = device->rx_ctx,
+			.tx_ctx = device->tx_ctx,
+			.metadata = device->metadata_buffer,
+			.metadata_length = HACKRF_RX_METADATA_MAX_LEN};
+		int cb_result = device->callback ? device->callback(&paired) : 0;
+		if ((cb_result != 0) || (paired.valid_length <= 0))
+			device->streaming = false;
 	}
 
 	hackrf_reset_rx_state(device);
@@ -205,25 +243,14 @@ static void hackrf_process_rx_payload(
 	size_t length)
 {
 	while ((length > 0) && device->streaming) {
-		if (!device->expecting_metadata && (device->iq_bytes_collected == 0) &&
-		    (length >= sizeof(uint32_t))) {
-			uint32_t magic_word;
-			memcpy(&magic_word, data, sizeof(uint32_t));
-			if (FROM_LE32(magic_word) == HACKRF_RX_METADATA_MAGIC) {
-				device->expecting_metadata = true;
-				device->metadata_bytes_collected = 0;
-				device->metadata_target_length = 0;
-			}
-		}
-
 		if (!device->expecting_metadata) {
-			size_t need = HACKRF_RX_IQ_BLOCK_BYTES - device->iq_bytes_collected;
+			size_t need = HACKRF_RX_IQ_GROUP_BYTES - device->iq_bytes_collected;
 			size_t copy_len = (length < need) ? length : need;
 			memcpy(device->pending_iq_buffer + device->iq_bytes_collected, data, copy_len);
 			device->iq_bytes_collected += copy_len;
 			data += copy_len;
 			length -= copy_len;
-			if (device->iq_bytes_collected == HACKRF_RX_IQ_BLOCK_BYTES) {
+			if (device->iq_bytes_collected == HACKRF_RX_IQ_GROUP_BYTES) {
 				device->expecting_metadata = true;
 				device->metadata_bytes_collected = 0;
 				device->metadata_target_length = 0;
@@ -245,38 +272,12 @@ static void hackrf_process_rx_payload(
 		uint32_t magic_word;
 		memcpy(&magic_word, device->metadata_buffer, sizeof(uint32_t));
 		if (FROM_LE32(magic_word) != HACKRF_RX_METADATA_MAGIC) {
-			/* Metadata missing: deliver IQ without metadata. */
-			size_t leftover = device->metadata_bytes_collected;
-			uint8_t metadata_spill[HACKRF_RX_METADATA_MAX_LEN];
-			if (leftover > 0) {
-				if (leftover > sizeof(metadata_spill))
-					leftover = sizeof(metadata_spill);
-				memcpy(metadata_spill, device->metadata_buffer, leftover);
-			}
-			hackrf_deliver_rx_block(device, HACKRF_RX_IQ_BLOCK_BYTES, false);
-			/* Treat the collected bytes as start of the next IQ block. */
-			device->iq_bytes_collected = leftover;
-			if (device->iq_bytes_collected > 0)
-				memcpy(device->pending_iq_buffer, metadata_spill, device->iq_bytes_collected);
-			device->expecting_metadata = false;
-			device->metadata_bytes_collected = 0;
-			device->metadata_target_length = 0;
-			continue;
+			device->streaming = false;
+			return;
 		}
 
 		if (device->metadata_target_length == 0) {
-			uint32_t event_count_le;
-			memcpy(&event_count_le, device->metadata_buffer + 8, sizeof(uint32_t));
-			size_t event_count = FROM_LE32(event_count_le);
-			if (event_count > HACKRF_RX_METADATA_MAX_EVENTS)
-				event_count = HACKRF_RX_METADATA_MAX_EVENTS;
-			size_t expected = HACKRF_RX_METADATA_MIN_BYTES +
-				(event_count * sizeof(hackrf_rx_metadata_event_t));
-			if (expected < HACKRF_RX_METADATA_MAX_LEN)
-				expected = HACKRF_RX_METADATA_MAX_LEN;
-			if (expected > HACKRF_RX_METADATA_MAX_LEN)
-				expected = HACKRF_RX_METADATA_MAX_LEN;
-			device->metadata_target_length = expected;
+			device->metadata_target_length = HACKRF_RX_METADATA_MAX_LEN;
 		}
 
 		if (device->metadata_bytes_collected < device->metadata_target_length) {
@@ -290,8 +291,7 @@ static void hackrf_process_rx_payload(
 
 		if ((device->metadata_target_length > 0) &&
 		    (device->metadata_bytes_collected >= device->metadata_target_length)) {
-			size_t iq_len = device->iq_bytes_collected;
-			hackrf_deliver_rx_block(device, iq_len, true);
+			hackrf_deliver_rx_group(device);
 			continue;
 		}
 	}
@@ -2200,14 +2200,16 @@ static int hackrf_stop_cmd(hackrf_device* device)
  */
 int ADDCALL hackrf_stop_rx(hackrf_device* device)
 {
-	int result;
-
-	result = cancel_transfers(device);
-	if (result != HACKRF_SUCCESS) {
-		return result;
-	}
-
-	return hackrf_stop_cmd(device);
+	/*
+	 * Cancel the host's bulk URBs before asking the firmware to stop. The
+	 * firmware RX enqueue loop observes the mode-request sequence and is no
+	 * longer allowed to block indefinitely on a full device queue, so it is
+	 * safe to remove the host URBs first. Sending OFF while bulk IN transfers
+	 * remain active can otherwise leave the device endpoint flush waiting.
+	 */
+	int const cancel_result = cancel_transfers(device);
+	int const stop_result = hackrf_stop_cmd(device);
+	return stop_result != HACKRF_SUCCESS ? stop_result : cancel_result;
 }
 
 int ADDCALL hackrf_start_tx(
