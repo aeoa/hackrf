@@ -54,7 +54,7 @@ ExternalProject_Add(libopencm3_${PROJECT_NAME}
 
 if (NOT DEFINED VERSION)
 	execute_process(
-		COMMAND git log -n 1 --format=%h
+		COMMAND git describe --always --dirty
 		WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
 		RESULT_VARIABLE GIT_VERSION_FOUND
 		ERROR_QUIET
