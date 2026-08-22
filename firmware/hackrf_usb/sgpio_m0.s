@@ -221,6 +221,8 @@ The rest of this file is organised as follows:
 
 // Private variables stored after state.
 .equ PREV_LONGEST_SHORTFALL,               0x28
+.equ RX_BLOCK0_SAMPLE,                     0x2C
+.equ RX_BLOCK1_SAMPLE,                     0x30
 
 // Operating modes.
 .equ MODE_IDLE,                            0
@@ -256,6 +258,7 @@ buf_base          .req r12
 buf_mask          .req r11
 shortfall_length  .req r10
 hi_zero           .req r9
+dropped_samples   .req r8
 sgpio_data        .req r7
 sgpio_int         .req r6
 count             .req r5
@@ -306,7 +309,9 @@ buf_ptr           .req r4
 	flag .req r2
 	ldr mode, [state, #REQUESTED_MODE]              // mode = state.requested_mode          // 2
 	lsr flag, mode, #16                             // flag = mode >> 16                    // 1
-	bne \label                                      // if flag != 0: goto label             // 1 thru, 3 taken
+	beq 1f                                          // if flag == 0: continue               // 1 thru, 3 taken
+	b \label                                        // otherwise handle request             // 3
+1:
 .endm
 
 .macro update_buf_ptr
@@ -485,6 +490,7 @@ main:                                                                           
 	zero .req r0
 	mov zero, #0                                    // zero = 0                             // 1
 	mov hi_zero, zero                               // hi_zero = zero                       // 1
+	mov dropped_samples, zero                       // dropped_samples = zero               // 1
 
 	// Initialise state.
 	str zero, [state, #REQUESTED_MODE]              // state.requested_mode = zero          // 2
@@ -497,6 +503,9 @@ main:                                                                           
 	str zero, [state, #THRESHOLD]                   // state.threshold = zero               // 2
 	str zero, [state, #NEXT_MODE]                   // state.next_mode = zero               // 2
 	str zero, [state, #ERROR]                       // state.error = zero                   // 2
+	str zero, [state, #PREV_LONGEST_SHORTFALL]      // prev_longest_shortfall = zero        // 2
+	str zero, [state, #RX_BLOCK0_SAMPLE]            // block0 sample index = zero           // 2
+	str zero, [state, #RX_BLOCK1_SAMPLE]            // block1 sample index = zero           // 2
 
 idle:
 	// Wait for a mode to be requested, then set up the new mode and acknowledge the request.
@@ -531,7 +540,10 @@ idle:
 	str zero, [state, #THRESHOLD]                   // state.threshold = zero               // 2
 	str zero, [state, #PREV_LONGEST_SHORTFALL]      // prev_longest_shortfall = zero        // 2
 	str zero, [state, #ERROR]                       // state.error = zero                   // 2
+	str zero, [state, #RX_BLOCK0_SAMPLE]            // block0 sample index = zero           // 2
+	str zero, [state, #RX_BLOCK1_SAMPLE]            // block1 sample index = zero           // 2
 	mov shortfall_length, zero                      // shortfall_length = zero              // 1
+	mov dropped_samples, zero                       // dropped_samples = zero               // 1
 	mov count, zero                                 // count = zero                         // 1
 
 ack_request:
@@ -702,7 +714,13 @@ rx_loop:
 	// Update buffer pointer.
 	update_buf_ptr                                  // update_buf_ptr()                     // 3
 
+	// Record the absolute sample position at each 16 KiB block boundary.
+	mov r0, count                                   // r0 = count                           // 1
+	lsl r0, r0, #18                                 // shift low bits, capture block bit    // 1
+	beq rx_record_block_sample                      // start of block                       // 1 thru, 3 taken
+
 	// Read data from SGPIO.
+read_rx_data:
 	ldr r0, [sgpio_data, #SLICE0]                   // r0 = SGPIO_REG_SS[SLICE0]            // 10
 	ldr r1, [sgpio_data, #SLICE1]                   // r1 = SGPIO_REG_SS[SLICE1]            // 10
 	ldr r2, [sgpio_data, #SLICE2]                   // r2 = SGPIO_REG_SS[SLICE2]            // 10
@@ -721,9 +739,27 @@ rx_loop:
 	jump_next_mode rx                               // jump_next_mode()                     // 12
 
 rx_shortfall:
+	// Count samples discarded while the successful byte counter is stationary.
+	mov r0, #16                                     // one SGPIO service interval           // 1
+	add dropped_samples, r0                         // advance absolute sample position     // 1
 
 	// Run common shortfall handling and jump back to RX loop.
 	handle_shortfall rx                             // handle_shortfall()                   // 24
+
+rx_record_block_sample:
+	bcs rx_record_block1_sample                     // carry set => block 1                 // 1 thru, 3 taken
+	mov r2, count                                   // r2 = successful byte count           // 1
+	lsr r2, r2, #1                                  // r2 = successful sample count         // 1
+	add r2, dropped_samples                         // include discarded samples            // 1
+	str r2, [state, #RX_BLOCK0_SAMPLE]              // block0 sample index                  // 2
+	b read_rx_data                                  //                                      // 3
+
+rx_record_block1_sample:
+	mov r2, count                                   // r2 = successful byte count           // 1
+	lsr r2, r2, #1                                  // r2 = successful sample count         // 1
+	add r2, dropped_samples                         // include discarded samples            // 1
+	str r2, [state, #RX_BLOCK1_SAMPLE]              // block1 sample index                  // 2
+	b read_rx_data                                  //                                      // 3
 
 // The linker will put a literal pool here, so add a label for clearer objdump output:
 constants:

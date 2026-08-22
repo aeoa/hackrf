@@ -25,6 +25,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <string.h>
 
 #include <libopencm3/cm3/nvic.h>
 #include <libopencm3/lpc43xx/gpdma.h>
@@ -48,9 +49,34 @@
 
 #include "usb_buffer.h"
 #include "usb_endpoint.h"
+#include "sample_counter.h"
 
 #define USB_TRANSFER_SIZE 0x4000
 #define DMA_TRANSFER_SIZE 0x2000
+
+#define RX_IQ_BLOCK_SHIFT 14U
+#define RX_IQ_BLOCK_MASK (USB_TRANSFER_SIZE - 1U)
+#define RX_METADATA_SIZE 512U
+#define RX_METADATA_GROUP_BLOCKS 16U
+#define RX_METADATA_GROUP_MAGIC 0x47525010U
+#define RX_METADATA_MAX_EVENTS 96U
+#define RX_METADATA_DROPPED_WORD (3U + RX_METADATA_MAX_EVENTS)
+#define RX_METADATA_HIGH_WATER_WORD (RX_METADATA_DROPPED_WORD + 1U)
+#define RX_METADATA_CAPACITY_WORD (RX_METADATA_HIGH_WATER_WORD + 1U)
+#define RX_METADATA_GROUP_MAGIC_WORD (RX_METADATA_CAPACITY_WORD + 1U)
+#define RX_METADATA_GROUP_COUNT_WORD (RX_METADATA_GROUP_MAGIC_WORD + 1U)
+#define RX_METADATA_FIRST_SAMPLE_WORD (RX_METADATA_GROUP_COUNT_WORD + 1U)
+#define RX_METADATA_SHORTFALL_COUNT_WORD \
+	(RX_METADATA_FIRST_SAMPLE_WORD + RX_METADATA_GROUP_BLOCKS)
+#define RX_METADATA_LONGEST_SHORTFALL_WORD \
+	(RX_METADATA_SHORTFALL_COUNT_WORD + 1U)
+#define RX_METADATA_MAGIC 0xDEADBEEFU
+#define RX_FIRST_SAMPLE_RING_BLOCKS (RX_METADATA_GROUP_BLOCKS * 2U)
+#define RX_FIRST_SAMPLE_RING_MASK (RX_FIRST_SAMPLE_RING_BLOCKS - 1U)
+
+typedef char rx_metadata_must_fit[
+	(RX_METADATA_LONGEST_SHORTFALL_WORD <
+	 (RX_METADATA_SIZE / sizeof(uint32_t))) ? 1 : -1];
 
 #define BUF_HALF_MASK (USB_SAMP_BUFFER_SIZE >> 1)
 
@@ -60,6 +86,16 @@
 bool auto_tx_flush = true;
 
 volatile uint32_t dma_started, dma_pending, usb_started, usb_completed;
+
+static uint32_t receiver_first_samples[RX_FIRST_SAMPLE_RING_BLOCKS];
+static uint32_t receiver_metadata_buffers[2][RX_METADATA_SIZE / sizeof(uint32_t)];
+static volatile bool receiver_metadata_buffer_available[2] = {true, true};
+
+static uint32_t block_first_sample(uint32_t block_index)
+{
+	return block_index == 0U ? m0_state.block0_first_sample :
+		m0_state.block1_first_sample;
+}
 
 typedef struct {
 	uint32_t freq_mhz;
@@ -345,9 +381,7 @@ void transceiver_usb_setup_complete(usb_endpoint_t* const endpoint)
 // Must be called from an atomic context (normally USB ISR)
 void request_transceiver_mode(transceiver_mode_t mode)
 {
-	usb_endpoint_flush(&usb_endpoint_bulk_in);
-	usb_endpoint_flush(&usb_endpoint_bulk_out);
-
+	/* The active mode loop observes seq and flushes from transceiver_shutdown(). */
 	transceiver_request.mode = mode;
 	transceiver_request.seq++;
 }
@@ -553,6 +587,35 @@ void transceiver_bulk_transfer_complete(void* user_data, unsigned int bytes_tran
 	usb_completed += bytes_transferred;
 }
 
+static void receiver_metadata_transfer_complete(
+	void* user_data,
+	unsigned int bytes_transferred)
+{
+	(void) bytes_transferred;
+	*((volatile bool*) user_data) = true;
+}
+
+static bool receiver_transfer_schedule(
+	uint32_t seq,
+	void* data,
+	uint32_t length,
+	transfer_completion_cb completion_cb,
+	void* user_data)
+{
+	while (transceiver_request.seq == seq) {
+		if (usb_transfer_schedule(
+				&usb_endpoint_bulk_in,
+				data,
+				length,
+				completion_cb,
+				user_data) == 0) {
+			return true;
+		}
+		radio_update(&radio);
+	}
+	return false;
+}
+
 typedef enum {
 	DIRECTION_RX,
 	DIRECTION_TX,
@@ -599,9 +662,86 @@ void start_dma_if_possible(direction_t direction, size_t size)
 		return;
 	}
 
+	if (direction == DIRECTION_RX &&
+	    (dma_started & RX_IQ_BLOCK_MASK) == 0U) {
+		uint32_t const block_number = dma_started >> RX_IQ_BLOCK_SHIFT;
+		uint32_t const sample_buffer_block = block_number & 0x1U;
+		receiver_first_samples[block_number & RX_FIRST_SAMPLE_RING_MASK] =
+			block_first_sample(sample_buffer_block);
+	}
+
 	transceiver_start_dma(src, dest, size);
 
 	dma_started += size;
+}
+
+static bool start_rx_usb_if_possible(uint32_t seq, uint32_t* metadata_sequence)
+{
+	uint32_t const dma_completed = m0_state.m4_count;
+	if ((dma_completed - usb_started) < USB_TRANSFER_SIZE) {
+		return true;
+	}
+
+	uint32_t const completed_block_count =
+		(usb_started >> RX_IQ_BLOCK_SHIFT) + 1U;
+	bool const completes_group =
+		(completed_block_count % RX_METADATA_GROUP_BLOCKS) == 0U;
+	uint32_t const metadata_index = *metadata_sequence & 0x1U;
+	if (completes_group &&
+	    !receiver_metadata_buffer_available[metadata_index]) {
+		return true;
+	}
+
+	uint8_t* const iq = &usb_bulk_buffer[usb_started & USB_BULK_BUFFER_MASK];
+	if (!receiver_transfer_schedule(
+			seq,
+			iq,
+			USB_TRANSFER_SIZE,
+			transceiver_bulk_transfer_complete,
+			NULL)) {
+		return false;
+	}
+	usb_started += USB_TRANSFER_SIZE;
+
+	if (!completes_group) {
+		return true;
+	}
+
+	uint32_t* const header = receiver_metadata_buffers[metadata_index];
+	uint32_t const first_block_number =
+		completed_block_count - RX_METADATA_GROUP_BLOCKS;
+	memset(header, 0, RX_METADATA_SIZE);
+	header[0] = RX_METADATA_MAGIC;
+	for (uint32_t i = 0; i < RX_METADATA_GROUP_BLOCKS; ++i) {
+		uint32_t const first_sample = receiver_first_samples[
+			(first_block_number + i) & RX_FIRST_SAMPLE_RING_MASK];
+		header[RX_METADATA_FIRST_SAMPLE_WORD + i] = first_sample;
+		if (i == RX_METADATA_GROUP_BLOCKS - 1U) {
+			header[1] = first_sample;
+		}
+	}
+	header[2] = sample_counter_capture_drain_packed(
+		&header[3],
+		RX_METADATA_MAX_EVENTS);
+	header[RX_METADATA_DROPPED_WORD] = sample_counter_capture_dropped();
+	header[RX_METADATA_HIGH_WATER_WORD] = sample_counter_capture_high_water();
+	header[RX_METADATA_CAPACITY_WORD] = sample_counter_capture_capacity();
+	header[RX_METADATA_GROUP_MAGIC_WORD] = RX_METADATA_GROUP_MAGIC;
+	header[RX_METADATA_GROUP_COUNT_WORD] = RX_METADATA_GROUP_BLOCKS;
+	header[RX_METADATA_SHORTFALL_COUNT_WORD] = m0_state.num_shortfalls;
+	header[RX_METADATA_LONGEST_SHORTFALL_WORD] = m0_state.longest_shortfall;
+	receiver_metadata_buffer_available[metadata_index] = false;
+
+	if (!receiver_transfer_schedule(
+			seq,
+			header,
+			RX_METADATA_SIZE,
+			receiver_metadata_transfer_complete,
+			(void*) &receiver_metadata_buffer_available[metadata_index])) {
+		return false;
+	}
+	++*metadata_sequence;
+	return true;
 }
 
 void start_usb_if_possible(direction_t direction)
@@ -636,16 +776,23 @@ void start_usb_if_possible(direction_t direction)
 
 void rx_mode(uint32_t seq)
 {
+	uint32_t metadata_sequence = 0;
+	receiver_metadata_buffer_available[0] = true;
+	receiver_metadata_buffer_available[1] = true;
 	transceiver_startup(TRANSCEIVER_MODE_RX);
+	sample_counter_capture_enable();
 
 	baseband_streaming_enable(&sgpio_config);
 
 	while (transceiver_request.seq == seq) {
 		start_dma_if_possible(DIRECTION_RX, DMA_TRANSFER_SIZE);
-		start_usb_if_possible(DIRECTION_RX);
+		if (!start_rx_usb_if_possible(seq, &metadata_sequence)) {
+			break;
+		}
 		radio_update(&radio);
 	}
 
+	sample_counter_capture_disable();
 	transceiver_shutdown();
 }
 
