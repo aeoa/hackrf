@@ -31,3 +31,4 @@ size_t sample_counter_capture_drain_packed(uint32_t* dest, size_t max_events);
 uint32_t sample_counter_capture_dropped(void);
 uint32_t sample_counter_capture_high_water(void);
 uint32_t sample_counter_capture_capacity(void);
+uint32_t sample_counter_capture_filtered(uint8_t source);

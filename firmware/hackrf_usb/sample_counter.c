@@ -1,4 +1,5 @@
 #include "sample_counter.h"
+#include "sample_counter_filter.h"
 
 #include <libopencm3/cm3/cortex.h>
 #include <libopencm3/cm3/nvic.h>
@@ -44,6 +45,8 @@ static volatile uint16_t fifo_tail;
 static volatile bool fifo_enabled;
 static volatile uint32_t fifo_dropped_events;
 static volatile uint32_t fifo_high_water;
+static volatile uint32_t filtered_events[2];
+static sample_counter_filter_state_t filter_states[2];
 
 static inline void fifo_reset(void)
 {
@@ -86,15 +89,20 @@ void sample_counter_capture_enable(void)
 	fifo_reset();
 	fifo_dropped_events = 0;
 	fifo_high_water = 0;
+	filtered_events[SAMPLE_COUNTER_SOURCE0] = 0;
+	filtered_events[SAMPLE_COUNTER_SOURCE1] = 0;
+	sample_counter_filter_reset(&filter_states[SAMPLE_COUNTER_SOURCE0]);
+	sample_counter_filter_reset(&filter_states[SAMPLE_COUNTER_SOURCE1]);
 	cm_enable_interrupts();
 
 	const platform_scu_t* const scu = platform_scu();
+	/* Keep the SCU input glitch filter enabled on both pulse inputs. */
 	scu_pinmux(
 		scu->PINMUX_SGPIO15,
-		SCU_GPIO_FAST | SCU_CONF_FUNCTION1); /* P4_10: CTIN_2 */
+		SCU_GPIO_NOPULL | SCU_CONF_FUNCTION1); /* P4_10: CTIN_2 */
 	scu_pinmux(
 		scu->PINMUX_SGPIO14,
-		SCU_GPIO_FAST | SCU_CONF_FUNCTION1); /* P4_9: CTIN_6 */
+		SCU_GPIO_NOPULL | SCU_CONF_FUNCTION1); /* P4_9: CTIN_6 */
 
 	/* Select direct CTIN paths; the SCT handles edge synchronization. */
 	GIMA_CTIN_2_IN = 0;
@@ -208,6 +216,11 @@ uint32_t sample_counter_capture_capacity(void)
 	return SAMPLE_COUNTER_FIFO_DEPTH - 1U;
 }
 
+uint32_t sample_counter_capture_filtered(uint8_t source)
+{
+	return source < 2U ? filtered_events[source] : 0U;
+}
+
 void sct_isr(void)
 {
 	uint32_t const flags = SCT_EVFLAG & SAMPLE_COUNTER_SCT_EVENT_MASK;
@@ -256,7 +269,13 @@ void sct_isr(void)
 	}
 
 	for (size_t i = 0; i < event_count; ++i) {
-		fifo_push(events[i]);
+		sample_counter_event_t const event = events[i];
+		if (sample_counter_filter_accept(
+			    &filter_states[event.source], event)) {
+			fifo_push(event);
+		} else {
+			filtered_events[event.source]++;
+		}
 	}
 
 	SCT_EVFLAG = flags;

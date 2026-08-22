@@ -70,12 +70,16 @@
 	(RX_METADATA_FIRST_SAMPLE_WORD + RX_METADATA_GROUP_BLOCKS)
 #define RX_METADATA_LONGEST_SHORTFALL_WORD \
 	(RX_METADATA_SHORTFALL_COUNT_WORD + 1U)
+#define RX_METADATA_FILTERED_SOURCE0_WORD \
+	(RX_METADATA_LONGEST_SHORTFALL_WORD + 1U)
+#define RX_METADATA_FILTERED_SOURCE1_WORD \
+	(RX_METADATA_FILTERED_SOURCE0_WORD + 1U)
 #define RX_METADATA_MAGIC 0xDEADBEEFU
 #define RX_FIRST_SAMPLE_RING_BLOCKS (RX_METADATA_GROUP_BLOCKS * 2U)
 #define RX_FIRST_SAMPLE_RING_MASK (RX_FIRST_SAMPLE_RING_BLOCKS - 1U)
 
 typedef char rx_metadata_must_fit[
-	(RX_METADATA_LONGEST_SHORTFALL_WORD <
+	(RX_METADATA_FILTERED_SOURCE1_WORD <
 	 (RX_METADATA_SIZE / sizeof(uint32_t))) ? 1 : -1];
 
 #define BUF_HALF_MASK (USB_SAMP_BUFFER_SIZE >> 1)
@@ -730,6 +734,10 @@ static bool start_rx_usb_if_possible(uint32_t seq, uint32_t* metadata_sequence)
 	header[RX_METADATA_GROUP_COUNT_WORD] = RX_METADATA_GROUP_BLOCKS;
 	header[RX_METADATA_SHORTFALL_COUNT_WORD] = m0_state.num_shortfalls;
 	header[RX_METADATA_LONGEST_SHORTFALL_WORD] = m0_state.longest_shortfall;
+	header[RX_METADATA_FILTERED_SOURCE0_WORD] =
+		sample_counter_capture_filtered(0U);
+	header[RX_METADATA_FILTERED_SOURCE1_WORD] =
+		sample_counter_capture_filtered(1U);
 	receiver_metadata_buffer_available[metadata_index] = false;
 
 	if (!receiver_transfer_schedule(
